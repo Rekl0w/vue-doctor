@@ -1,0 +1,109 @@
+name: "Vue Doctor"
+description: "Scan Vue codebases for security, performance, correctness, accessibility, and architecture issues"
+branding:
+  icon: "activity"
+  color: "green"
+
+inputs:
+  directory:
+    description: "Project directory to scan"
+    default: "."
+  verbose:
+    description: "Show every diagnostic"
+    default: "false"
+  github-token:
+    description: "GitHub token for posting PR comments. When set on pull_request events, findings are posted as a PR comment."
+    required: false
+  fail-on:
+    description: "Exit with error code on diagnostics: error, warning, none"
+    default: "error"
+  node-version:
+    description: "Node.js version to use"
+    default: "20"
+
+outputs:
+  score:
+    description: "Health score (0-100)"
+    value: ${{ steps.score.outputs.score }}
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - shell: bash
+      env:
+        INPUT_DIRECTORY: ${{ inputs.directory }}
+        INPUT_VERBOSE: ${{ inputs.verbose }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        RUNNER_TEMP: ${{ runner.temp }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+      run: |
+        FLAGS=("--fail-on" "$INPUT_FAIL_ON")
+        if [ "$INPUT_VERBOSE" = "true" ]; then FLAGS+=("--verbose"); fi
+
+        OUTPUT_FILE="${RUNNER_TEMP:-/tmp}/vue-doctor-output-${GITHUB_RUN_ID:-$$}.txt"
+        echo "VUE_DOCTOR_OUTPUT_FILE=$OUTPUT_FILE" >> "$GITHUB_ENV"
+
+        if [ -n "$INPUT_GITHUB_TOKEN" ]; then
+          npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" "${FLAGS[@]}" | tee "$OUTPUT_FILE"
+        else
+          npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" "${FLAGS[@]}"
+        fi
+
+    - id: score
+      if: always()
+      shell: bash
+      env:
+        INPUT_DIRECTORY: ${{ inputs.directory }}
+      run: |
+        SCORE=$(npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" --score --fail-on none 2>/dev/null | tail -1 | tr -d '[:space:]') || true
+        if [[ -n "$SCORE" && "$SCORE" =~ ^[0-9]+$ ]]; then
+          echo "score=$SCORE" >> "$GITHUB_OUTPUT"
+        fi
+
+    - if: ${{ inputs.github-token != '' && github.event_name == 'pull_request' }}
+      uses: actions/github-script@v7
+      env:
+        VUE_DOCTOR_OUTPUT_FILE: ${{ env.VUE_DOCTOR_OUTPUT_FILE }}
+        VUE_DOCTOR_SCORE: ${{ steps.score.outputs.score }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require("fs");
+          const path = process.env.VUE_DOCTOR_OUTPUT_FILE;
+          if (!path || !fs.existsSync(path)) return;
+          const output = fs.readFileSync(path, "utf8").trim();
+          if (!output) return;
+
+          const score = process.env.VUE_DOCTOR_SCORE;
+          const scoreLine =
+            score && /^[0-9]+$/.test(score)
+              ? `**Score:** \`${score}\` / 100\n\n`
+              : "";
+
+          const marker = "<!-- vue-doctor -->";
+          const fence = "````";
+          const body = `${marker}\n## Vue Doctor\n\n${scoreLine}${fence}\n${output}\n${fence}`;
+
+          const { data: comments } = await github.rest.issues.listComments({
+            ...context.repo,
+            issue_number: context.issue.number,
+          });
+          const prev = comments.find((comment) => comment.body?.startsWith(marker));
+          if (prev) {
+            await github.rest.issues.updateComment({
+              ...context.repo,
+              comment_id: prev.id,
+              body,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+          }

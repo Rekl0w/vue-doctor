@@ -1,0 +1,84 @@
+{
+  "name": "@rekl0w/vue-doctor",
+  "version": "0.1.0",
+  "description": "Diagnose Vue codebases for security, performance, correctness, accessibility, and architecture issues",
+  "keywords": [
+    "accessibility",
+    "diagnostics",
+    "linter",
+    "nuxt",
+    "performance",
+    "security",
+    "sfc",
+    "vue",
+    "vue3"
+  ],
+  "homepage": "https://github.com/Rekl0w/vue-doctor#readme",
+  "bugs": {
+    "url": "https://github.com/Rekl0w/vue-doctor/issues"
+  },
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Rekl0w/vue-doctor.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "bin": {
+    "vue-doctor": "./bin/vue-doctor.js"
+  },
+  "files": [
+    "bin/**",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./api": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./rules": {
+      "types": "./dist/rules/index.d.ts",
+      "default": "./dist/rules/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run test && npm run build",
+    "local:link": "npm run build && npm link",
+    "local:pack": "node scripts/pack-local.mjs",
+    "prepack": "npm run check"
+  },
+  "dependencies": {
+    "@vue/compiler-dom": "^3.5.0",
+    "@vue/compiler-sfc": "^3.5.0",
+    "commander": "^14.0.0",
+    "ignore": "^7.0.0",
+    "minimatch": "^10.0.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20.12"
+  }
+}
