@@ -1,7 +1,7 @@
 <h1>Vue Doctor</h1>
 
-[![version](https://img.shields.io/npm/v/%40rekl0w%2Fvue-doctor?style=flat&colorA=000000&colorB=000000)](https://www.npmjs.com/package/@rekl0w/vue-doctor)
-[![license](https://img.shields.io/npm/l/%40rekl0w%2Fvue-doctor?style=flat&colorA=000000&colorB=000000)](./LICENSE)
+[![version](https://img.shields.io/npm/v/%40rekl0w%2Fvue-doctor?style=flat)](https://www.npmjs.com/package/@rekl0w/vue-doctor)
+[![license](https://img.shields.io/github/license/Rekl0w/vue-doctor?style=flat)](./LICENSE)
 
 Your agent writes risky Vue. This catches the boring mistakes before they ship.
 
@@ -139,7 +139,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Rekl0w/vue-doctor@v0.1.0
+      - uses: Rekl0w/vue-doctor@v0.1.1
         with:
           directory: .
           fail-on: warning

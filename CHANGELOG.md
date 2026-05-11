@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- Renamed the GitHub Marketplace action to `Rekl0w Vue Doctor` so it can be published with a unique Marketplace name.
+- Kept the CLI command as `vue-doctor` and the npm package as `@rekl0w/vue-doctor`.
+- Refreshed package metadata for npm publishing.
+
 ## 0.1.0
 
 - Initial Vue Doctor CLI and Node API.
