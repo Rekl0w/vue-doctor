@@ -21,7 +21,7 @@
   "author": "",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Rekl0w/vue-doctor.git"
+    "url": "git+https://github.com/Rekl0w/vue-doctor.git"
   },
   "publishConfig": {
     "access": "public"
@@ -29,7 +29,7 @@
   "type": "module",
   "sideEffects": false,
   "bin": {
-    "vue-doctor": "./bin/vue-doctor.js"
+    "vue-doctor": "bin/vue-doctor.js"
   },
   "files": [
     "bin/**",
