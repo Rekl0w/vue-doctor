@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2
+
+- Added GitHub Action inputs for `annotations`, `json`, and `report-path`.
+- Added a `report-path` action output for JSON report artifact workflows.
+- Kept the human-readable PR comment output separate from GitHub Actions annotations.
+- Kept score/report/comment steps running even when the configured CI gate fails.
+- Documented score outputs, annotations, and JSON artifact usage in CI.
+
 ## 0.1.1
 
 - Renamed the GitHub Marketplace action to `Rekl0w Vue Doctor` so it can be published with a unique Marketplace name.

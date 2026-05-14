@@ -58,7 +58,7 @@ From your Vue project:
 
 ```powershell
 cd C:\Users\Windows\Desktop\your-vue-project
-npm install -D C:\Users\Windows\Desktop\vue-doctor\.local-pack\rekl0w-vue-doctor-0.1.1.tgz
+npm install -D C:\Users\Windows\Desktop\vue-doctor\.local-pack\rekl0w-vue-doctor-0.1.2.tgz
 npx vue-doctor . --verbose
 ```
 

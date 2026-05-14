@@ -139,17 +139,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Rekl0w/vue-doctor@v0.1.1
+      - uses: Rekl0w/vue-doctor@v0.1.2
+        id: vue-doctor
         with:
           directory: .
           fail-on: warning
+          annotations: true
+          json: true
+          report-path: vue-doctor-report.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vue-doctor-report
+          path: ${{ steps.vue-doctor.outputs['report-path'] }}
+```
+
+The action exposes the numeric health score as an output:
+
+```yaml
+${{ steps.vue-doctor.outputs.score }}
 ```
 
 Prefer not to use the action? The package works directly:
 
 ```yaml
 - run: npx -y @rekl0w/vue-doctor . --fail-on warning --annotations
+- run: npx -y @rekl0w/vue-doctor . --json --fail-on none > vue-doctor-report.json
 ```
 
 ## Node API

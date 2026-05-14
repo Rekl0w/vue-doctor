@@ -11,6 +11,15 @@ inputs:
   verbose:
     description: "Show every diagnostic"
     default: "false"
+  annotations:
+    description: "Emit GitHub Actions annotations for every diagnostic"
+    default: "false"
+  json:
+    description: "Write a JSON report file"
+    default: "false"
+  report-path:
+    description: "Path for the JSON report when json is true"
+    default: "vue-doctor-report.json"
   github-token:
     description: "GitHub token for posting PR comments. When set on pull_request events, findings are posted as a PR comment."
     required: false
@@ -25,6 +34,9 @@ outputs:
   score:
     description: "Health score (0-100)"
     value: ${{ steps.score.outputs.score }}
+  report-path:
+    description: "JSON report path when json is true"
+    value: ${{ steps.report.outputs['report-path'] }}
 
 runs:
   using: "composite"
@@ -42,6 +54,7 @@ runs:
         RUNNER_TEMP: ${{ runner.temp }}
         GITHUB_RUN_ID: ${{ github.run_id }}
       run: |
+        set -o pipefail
         FLAGS=("--fail-on" "$INPUT_FAIL_ON")
         if [ "$INPUT_VERBOSE" = "true" ]; then FLAGS+=("--verbose"); fi
 
@@ -54,6 +67,24 @@ runs:
           npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" "${FLAGS[@]}"
         fi
 
+    - if: ${{ always() && inputs.annotations == 'true' }}
+      shell: bash
+      env:
+        INPUT_DIRECTORY: ${{ inputs.directory }}
+      run: |
+        npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" --annotations --fail-on none
+
+    - id: report
+      if: ${{ always() && inputs.json == 'true' }}
+      shell: bash
+      env:
+        INPUT_DIRECTORY: ${{ inputs.directory }}
+        INPUT_REPORT_PATH: ${{ inputs.report-path }}
+      run: |
+        mkdir -p "$(dirname "$INPUT_REPORT_PATH")"
+        npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" --json --fail-on none > "$INPUT_REPORT_PATH"
+        echo "report-path=$INPUT_REPORT_PATH" >> "$GITHUB_OUTPUT"
+
     - id: score
       if: always()
       shell: bash
@@ -65,7 +96,7 @@ runs:
           echo "score=$SCORE" >> "$GITHUB_OUTPUT"
         fi
 
-    - if: ${{ inputs.github-token != '' && github.event_name == 'pull_request' }}
+    - if: ${{ always() && inputs.github-token != '' && github.event_name == 'pull_request' }}
       uses: actions/github-script@v7
       env:
         VUE_DOCTOR_OUTPUT_FILE: ${{ env.VUE_DOCTOR_OUTPUT_FILE }}
