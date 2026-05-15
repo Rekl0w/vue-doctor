@@ -139,7 +139,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Rekl0w/vue-doctor@v0.1.2
+      - uses: Rekl0w/vue-doctor@v0.1.3
         id: vue-doctor
         with:
           directory: .
@@ -155,6 +155,8 @@ jobs:
           name: vue-doctor-report
           path: ${{ steps.vue-doctor.outputs['report-path'] }}
 ```
+
+When `github-token` is set on pull requests, the action updates one Vue Doctor comment with a Markdown summary table and grouped diagnostics. The raw CLI output remains available in the workflow logs.
 
 The action exposes the numeric health score as an output:
 

@@ -61,11 +61,18 @@ runs:
         OUTPUT_FILE="${RUNNER_TEMP:-/tmp}/vue-doctor-output-${GITHUB_RUN_ID:-$$}.txt"
         echo "VUE_DOCTOR_OUTPUT_FILE=$OUTPUT_FILE" >> "$GITHUB_ENV"
 
+        STATUS=0
         if [ -n "$INPUT_GITHUB_TOKEN" ]; then
-          npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" "${FLAGS[@]}" | tee "$OUTPUT_FILE"
+          npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" "${FLAGS[@]}" | tee "$OUTPUT_FILE" || STATUS=$?
+
+          PR_REPORT_FILE="${RUNNER_TEMP:-/tmp}/vue-doctor-pr-report-${GITHUB_RUN_ID:-$$}.json"
+          echo "VUE_DOCTOR_PR_REPORT_FILE=$PR_REPORT_FILE" >> "$GITHUB_ENV"
+          npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" --json --fail-on none > "$PR_REPORT_FILE" || rm -f "$PR_REPORT_FILE"
         else
-          npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" "${FLAGS[@]}"
+          npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" "${FLAGS[@]}" || STATUS=$?
         fi
+
+        exit "$STATUS"
 
     - if: ${{ always() && inputs.annotations == 'true' }}
       shell: bash
@@ -100,25 +107,143 @@ runs:
       uses: actions/github-script@v7
       env:
         VUE_DOCTOR_OUTPUT_FILE: ${{ env.VUE_DOCTOR_OUTPUT_FILE }}
+        VUE_DOCTOR_PR_REPORT_FILE: ${{ env.VUE_DOCTOR_PR_REPORT_FILE }}
         VUE_DOCTOR_SCORE: ${{ steps.score.outputs.score }}
+        INPUT_VERBOSE: ${{ inputs.verbose }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
           const fs = require("fs");
-          const path = process.env.VUE_DOCTOR_OUTPUT_FILE;
-          if (!path || !fs.existsSync(path)) return;
-          const output = fs.readFileSync(path, "utf8").trim();
-          if (!output) return;
-
-          const score = process.env.VUE_DOCTOR_SCORE;
-          const scoreLine =
-            score && /^[0-9]+$/.test(score)
-              ? `**Score:** \`${score}\` / 100\n\n`
-              : "";
-
           const marker = "<!-- vue-doctor -->";
-          const fence = "````";
-          const body = `${marker}\n## Vue Doctor\n\n${scoreLine}${fence}\n${output}\n${fence}`;
+
+          const stripAnsi = (value) =>
+            String(value ?? "").replace(/[\u001B\u009B][[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, "");
+
+          const markdownText = (value) =>
+            String(value ?? "")
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;");
+
+          const tableText = (value) =>
+            markdownText(value)
+              .replace(/\r?\n/g, " ")
+              .replace(/\|/g, "\\|");
+
+          const inlineCode = (value) => {
+            const text = String(value ?? "").replace(/\r?\n/g, " ");
+            const longestTickRun = Math.max(0, ...Array.from(text.matchAll(/`+/g), (match) => match[0].length));
+            const fence = "`".repeat(longestTickRun + 1);
+            return `${fence}${text}${fence}`;
+          };
+
+          const readJson = (path) => {
+            if (!path || !fs.existsSync(path)) return null;
+            try {
+              return JSON.parse(fs.readFileSync(path, "utf8"));
+            } catch {
+              return null;
+            }
+          };
+
+          const readOutput = (path) => {
+            if (!path || !fs.existsSync(path)) return "";
+            return stripAnsi(fs.readFileSync(path, "utf8")).trim();
+          };
+
+          const locationFor = (diagnostic) =>
+            `${diagnostic.relativePath ?? diagnostic.filePath ?? "unknown"}:${diagnostic.line ?? 1}:${diagnostic.column ?? 1}`;
+
+          const renderReport = (report) => {
+            const summary = report.summary ?? {};
+            const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics.slice() : [];
+            const sourceFileCount = report.project?.sourceFileCount ?? "?";
+            const affectedFileCount = summary.affectedFileCount ?? 0;
+            const totalDiagnosticCount = summary.totalDiagnosticCount ?? diagnostics.length;
+            const fallbackScore = process.env.VUE_DOCTOR_SCORE;
+            const score = Number.isInteger(summary.score)
+              ? summary.score
+              : fallbackScore && /^[0-9]+$/.test(fallbackScore)
+                ? Number(fallbackScore)
+                : null;
+            const scoreLabel = summary.scoreLabel ? ` (${summary.scoreLabel})` : "";
+            const scoreLine = score === null ? "" : `**Score:** ${inlineCode(`${score}`)} / 100${scoreLabel}\n\n`;
+            const status = totalDiagnosticCount === 0 ? "No diagnostics" : "Diagnostics found";
+            const displayLimit = process.env.INPUT_VERBOSE === "true" ? 100 : 25;
+            const visibleDiagnostics = diagnostics.slice(0, displayLimit);
+            const hiddenCount = Math.max(0, diagnostics.length - visibleDiagnostics.length);
+            const lines = [
+              marker,
+              "## Vue Doctor",
+              "",
+              scoreLine.trimEnd(),
+              "",
+              "| Status | Files | Diagnostics | Errors | Warnings |",
+              "| --- | ---: | ---: | ---: | ---: |",
+              `| ${tableText(status)} | ${affectedFileCount} / ${sourceFileCount} | ${totalDiagnosticCount} | ${summary.errorCount ?? 0} | ${summary.warningCount ?? 0} |`,
+              "",
+            ];
+
+            if (diagnostics.length === 0) {
+              lines.push("No Vue Doctor diagnostics found.");
+              return lines.join("\n").replace(/\n{3,}/g, "\n\n");
+            }
+
+            if (hiddenCount > 0) {
+              lines.push(`Showing ${visibleDiagnostics.length} of ${diagnostics.length} diagnostics. Use the workflow logs or enable the JSON report artifact for the full report.`, "");
+            }
+
+            const groups = new Map();
+            for (const diagnostic of visibleDiagnostics) {
+              const category = diagnostic.category ?? "Other";
+              const group = groups.get(category) ?? [];
+              group.push(diagnostic);
+              groups.set(category, group);
+            }
+
+            let groupIndex = 0;
+            for (const [category, items] of groups) {
+              lines.push(`<details${groupIndex === 0 ? " open" : ""}>`);
+              lines.push(`<summary>${markdownText(category)} (${items.length})</summary>`, "");
+              for (const diagnostic of items) {
+                const ruleName = `${diagnostic.plugin ?? "vue-doctor"}/${diagnostic.rule ?? "unknown-rule"}`;
+                lines.push(
+                  `- **${markdownText(diagnostic.severity ?? "warning")}** ${inlineCode(ruleName)} at ${inlineCode(locationFor(diagnostic))}`,
+                  `  ${markdownText(diagnostic.message ?? "")}`,
+                );
+                if (diagnostic.help) {
+                  lines.push(`  ${markdownText(diagnostic.help)}`);
+                }
+              }
+              lines.push("", "</details>", "");
+              groupIndex += 1;
+            }
+
+            return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+          };
+
+          const renderFallback = (output) => {
+            if (!output) return "";
+            const score = process.env.VUE_DOCTOR_SCORE;
+            const scoreLine =
+              score && /^[0-9]+$/.test(score)
+                ? `**Score:** ${inlineCode(score)} / 100\n\n`
+                : "";
+            const truncatedOutput =
+              output.length > 50000
+                ? `${output.slice(0, 50000)}\n\n[Output truncated. Use the workflow logs for the full report.]`
+                : output;
+            return `${marker}\n## Vue Doctor\n\n${scoreLine}\`\`\`text\n${truncatedOutput}\n\`\`\``;
+          };
+
+          const report = readJson(process.env.VUE_DOCTOR_PR_REPORT_FILE);
+          const output = readOutput(process.env.VUE_DOCTOR_OUTPUT_FILE);
+          let body = report ? renderReport(report) : renderFallback(output);
+          if (!body) return;
+
+          if (body.length > 60000) {
+            body = `${body.slice(0, 59000)}\n\n[Comment truncated. Use the workflow logs or JSON report artifact for the full report.]`;
+          }
 
           const { data: comments } = await github.rest.issues.listComments({
             ...context.repo,

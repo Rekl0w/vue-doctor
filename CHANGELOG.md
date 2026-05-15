@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- Changed GitHub Action pull request comments to render Markdown summaries from JSON reports instead of raw ANSI terminal output.
+
 ## 0.1.2
 
 - Added GitHub Action inputs for `annotations`, `json`, and `report-path`.
