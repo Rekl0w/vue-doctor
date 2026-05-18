@@ -1,31 +1,72 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path, { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { Command } from "commander";
 import pc from "picocolors";
 import { DEFAULT_FAIL_ON, VERSION } from "./constants.js";
-import { diagnose, summarizeDiagnostics, toJsonReport } from "./scanner.js";
-import type { Diagnostic, DiagnoseResult, FailOnLevel, ScoreResult } from "./types.js";
+import {
+  diagnose,
+  summarizeDiagnostics,
+  toJsonReport,
+  toJsonReportFromScans,
+} from "./scanner.js";
+import type {
+  Diagnostic,
+  DiffInfo,
+  DiagnoseResult,
+  FailOnLevel,
+  JsonReport,
+  JsonReportMode,
+  ScoreResult,
+} from "./types.js";
+import { getDiffInfo, getStagedSourceFiles, filterSourceFiles } from "./utils/git.js";
+import { loadConfig } from "./utils/config.js";
+import { toRelativePath } from "./utils/path.js";
+import { runInstallSkill } from "./utils/install-skill.js";
+import { selectProjectDirectories } from "./utils/workspaces.js";
 
 interface CliFlags {
   verbose?: boolean;
   json?: boolean;
+  jsonCompact?: boolean;
   score?: boolean;
   annotations?: boolean;
+  prComment?: boolean;
+  yes?: boolean;
+  full?: boolean;
+  staged?: boolean;
+  offline?: boolean;
+  diff?: boolean | string;
+  project?: string;
   failOn?: string;
   config?: string;
   include?: string[];
+  explain?: string;
+  why?: string;
+  respectInlineDisables?: boolean;
+}
+
+interface InstallFlags {
+  yes?: boolean | undefined;
+  dryRun?: boolean | undefined;
+  cwd?: string | undefined;
+}
+
+interface CompletedScan {
+  directory: string;
+  result: DiagnoseResult;
 }
 
 const VALID_FAIL_ON_LEVELS = new Set<FailOnLevel>(["error", "warning", "none"]);
 const MAX_RULES_PER_CATEGORY = 3;
 const SCORE_BAR_WIDTH = 44;
 const SYMBOLS = {
-  ok: "✔",
-  error: "✗",
-  warning: "⚠",
-  arrow: "→",
+  ok: "OK",
+  error: "x",
+  warning: "!",
+  arrow: "->",
 };
 
 const parseInclude = (value: string, previous: string[] = []): string[] => [
@@ -45,16 +86,19 @@ const shouldFail = (diagnostics: Diagnostic[], failOn: FailOnLevel): boolean => 
   return diagnostics.some((diagnostic) => diagnostic.severity === "error");
 };
 
+const resolveFailOn = (value: string | undefined): FailOnLevel =>
+  VALID_FAIL_ON_LEVELS.has(value as FailOnLevel) ? (value as FailOnLevel) : DEFAULT_FAIL_ON;
+
 const printScore = (score: ScoreResult): void => {
   const color = colorByScore(score);
   const filled = Math.round((score.score / 100) * SCORE_BAR_WIDTH);
-  const bar = `${"█".repeat(filled)}${"░".repeat(SCORE_BAR_WIDTH - filled)}`;
-  const face = score.score >= 75 ? "•‿•" : score.score >= 50 ? "• - •" : "•︵•";
+  const bar = `${"#".repeat(filled)}${"-".repeat(SCORE_BAR_WIDTH - filled)}`;
+  const face = score.score >= 75 ? "^_^" : score.score >= 50 ? "-_-" : "x_x";
   const scoreLine = `${color(`${score.score} / 100`)} ${pc.dim(score.label)}`;
 
-  console.log(`  ┌───────┐  ${scoreLine}`);
-  console.log(`  │ ${face.padEnd(5, " ")} │  ${color(bar)}`);
-  console.log(`  └───────┘  ${pc.bold("Vue Doctor")}`);
+  console.log(`  +-------+  ${scoreLine}`);
+  console.log(`  | ${face.padEnd(5, " ")} |  ${color(bar)}`);
+  console.log(`  +-------+  ${pc.bold("Vue Doctor")}`);
 };
 
 const groupDiagnostics = (diagnostics: Diagnostic[]): Map<string, Diagnostic[]> => {
@@ -104,12 +148,24 @@ const RULE_TITLES: Record<string, string> = {
   "no-expensive-template-expression": "Expensive template expression",
   "no-deep-watch": "Deep watch",
   "watch-requires-cleanup": "Watcher needs cleanup",
+  "no-transition-all": "Transition all",
+  "no-permanent-will-change": "Permanent will-change",
   "require-img-alt": "Image alt",
   "require-button-name": "Button accessible name",
   "no-autofocus": "Autofocus",
+  "no-disabled-zoom": "Disabled zoom",
   "no-large-component": "Large component",
   "no-too-many-props": "Too many props",
   "prefer-scoped-style": "Scoped style",
+  "no-full-lodash-import": "Full lodash import",
+  "no-moment": "Moment import",
+  "prefer-dynamic-import": "Heavy static import",
+  "no-outline-none": "Removed focus outline",
+  "no-tiny-text": "Tiny text",
+  "no-wide-letter-spacing": "Letter spacing",
+  "no-z-index-9999": "Magic z-index",
+  "no-pure-black-background": "Pure black background",
+  "no-gradient-text": "Gradient text",
 };
 
 const toRuleTitle = (ruleName: string): string => {
@@ -238,21 +294,24 @@ const printDiagnostics = (diagnostics: Diagnostic[], verbose: boolean): void => 
   }
 };
 
+const encodeAnnotationValue = (value: string): string =>
+  value.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A").replaceAll(",", "%2C");
+
 const printAnnotations = (diagnostics: Diagnostic[]): void => {
   for (const diagnostic of diagnostics) {
     const level = diagnostic.severity === "error" ? "error" : "warning";
-    const file = diagnostic.relativePath.replaceAll(",", "%2C").replaceAll("\n", "%0A");
-    const title = `vue-doctor/${diagnostic.rule}`.replaceAll(",", "%2C").replaceAll("\n", "%0A");
-    const message = diagnostic.message.replaceAll("\r", "%0D").replaceAll("\n", "%0A");
-    console.log(`::${level} file=${file},line=${diagnostic.line},title=${title}::${message}`);
+    const file = encodeAnnotationValue(diagnostic.relativePath);
+    const title = encodeAnnotationValue(`vue-doctor/${diagnostic.rule}`);
+    const message = encodeAnnotationValue(diagnostic.message);
+    console.log(`::${level} file=${file},line=${diagnostic.line},col=${diagnostic.column},title=${title}::${message}`);
   }
 };
 
-const writeFullDiagnostics = (directory: string, result: DiagnoseResult): string => {
+const writeFullReport = (directory: string, report: JsonReport): string => {
   const outputDirectory = join(tmpdir(), `vue-doctor-${randomUUID()}`);
   mkdirSync(outputDirectory, { recursive: true });
   const outputPath = join(outputDirectory, "report.json");
-  writeFileSync(outputPath, `${JSON.stringify(toJsonReport(directory, result), null, 2)}\n`);
+  writeFileSync(outputPath, `${JSON.stringify(report, null, 2)}\n`);
   return outputPath;
 };
 
@@ -321,52 +380,279 @@ const printRunFooter = (
   }
 };
 
+const coerceDiffValue = (value: unknown): boolean | string | undefined => {
+  if (value === undefined) return undefined;
+  if (value === true || value === false) return value;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  return trimmed.length > 0 ? trimmed : true;
+};
+
+const resolveDiffValue = (flags: CliFlags, configDiff: boolean | string | undefined): boolean | string | undefined => {
+  if (flags.full) return false;
+  return coerceDiffValue(flags.diff ?? configDiff);
+};
+
+const getWorstScore = (scans: CompletedScan[]): ScoreResult => {
+  if (scans.length === 0) return { score: 100, label: "Great" };
+  return scans
+    .map((scan) => scan.result.score)
+    .sort((left, right) => left.score - right.score)[0]!;
+};
+
+const getAllDiagnostics = (scans: CompletedScan[]): Diagnostic[] =>
+  scans.flatMap((scan) => scan.result.diagnostics);
+
+const resolveRespectInlineDisables = (flags: CliFlags): boolean | undefined =>
+  typeof flags.respectInlineDisables === "boolean" ? flags.respectInlineDisables : undefined;
+
+const parseExplainTarget = (value: string): { file: string; line: number } => {
+  const match = value.match(/^(.*):(\d+)$/);
+  if (!match?.[1] || !match[2]) {
+    throw new Error("Expected --explain value to look like src/App.vue:42.");
+  }
+  return { file: match[1], line: Number(match[2]) };
+};
+
+const runExplain = async (
+  rootDirectory: string,
+  flags: CliFlags,
+  explainValue: string,
+): Promise<void> => {
+  const target = parseExplainTarget(explainValue);
+  const activeResult = await diagnose(rootDirectory, {
+    configPath: flags.config,
+    includePaths: [target.file],
+    respectInlineDisables: resolveRespectInlineDisables(flags),
+  });
+  const auditResult = await diagnose(rootDirectory, {
+    configPath: flags.config,
+    includePaths: [target.file],
+    respectInlineDisables: false,
+  });
+
+  const isSameDiagnostic = (left: Diagnostic, right: Diagnostic): boolean =>
+    left.rule === right.rule && left.relativePath === right.relativePath && left.line === right.line && left.column === right.column;
+  const nearTarget = (diagnostic: Diagnostic): boolean =>
+    diagnostic.relativePath === toRelativePath(path.resolve(rootDirectory, target.file), rootDirectory) &&
+    Math.abs(diagnostic.line - target.line) <= 1;
+  const active = activeResult.diagnostics.filter(nearTarget);
+  const suppressed = auditResult.diagnostics
+    .filter(nearTarget)
+    .filter((diagnostic) => !activeResult.diagnostics.some((activeDiagnostic) => isSameDiagnostic(activeDiagnostic, diagnostic)));
+
+  if (flags.json) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          version: VERSION,
+          ok: true,
+          explain: {
+            file: target.file,
+            line: target.line,
+            diagnostics: active,
+            suppressed,
+          },
+        },
+        null,
+        flags.jsonCompact ? 0 : 2,
+      )}\n`,
+    );
+    return;
+  }
+
+  console.log(`Vue Doctor explain: ${target.file}:${target.line}`);
+  if (active.length === 0 && suppressed.length === 0) {
+    console.log(pc.green("No Vue Doctor diagnostics found at this line."));
+    return;
+  }
+
+  if (active.length > 0) {
+    console.log("");
+    console.log(pc.bold("Active diagnostics"));
+    printVerboseDiagnostics(active);
+  }
+  if (suppressed.length > 0) {
+    console.log("");
+    console.log(pc.bold("Suppressed diagnostics"));
+    printVerboseDiagnostics(suppressed);
+  }
+};
+
+const runInspect = async (directory: string, flags: CliFlags): Promise<void> => {
+  const requestedDirectory = path.resolve(directory);
+  const start = performance.now();
+  const loaded = loadConfig(requestedDirectory, flags.config);
+  const rootDirectory = loaded.rootDirectory;
+  const failOn = resolveFailOn(flags.failOn ?? loaded.config.failOn);
+  const explainValue = flags.explain ?? flags.why;
+
+  if (explainValue) {
+    await runExplain(rootDirectory, flags, explainValue);
+    return;
+  }
+
+  const quiet = Boolean(flags.json || flags.score || flags.annotations);
+  const projectDirectories = selectProjectDirectories(rootDirectory, flags.project, Boolean(flags.yes));
+  const diffValue = resolveDiffValue(flags, loaded.config.diff);
+  const mode: JsonReportMode = flags.staged ? "staged" : diffValue !== undefined && diffValue !== false ? "diff" : "full";
+  const explicitBase = typeof diffValue === "string" ? diffValue : undefined;
+  const scans: CompletedScan[] = [];
+  let reportDiff: DiffInfo | null = null;
+
+  if (flags.offline && !quiet) {
+    console.log(pc.dim("Offline mode enabled. Vue Doctor already scores locally, so no network call is made."));
+    console.log("");
+  }
+
+  for (const projectDirectory of projectDirectories) {
+    let includePaths = flags.include && flags.include.length > 0 ? flags.include : undefined;
+
+    if (flags.staged) {
+      const stagedFiles = getStagedSourceFiles(projectDirectory);
+      if (stagedFiles.length === 0) {
+        continue;
+      }
+      includePaths = stagedFiles;
+    } else if (mode === "diff") {
+      const diffInfo = getDiffInfo(projectDirectory, explicitBase);
+      if (projectDirectory === projectDirectories[0]) reportDiff = diffInfo;
+      if (diffInfo) {
+        const changedSourceFiles = filterSourceFiles(diffInfo.changedFiles);
+        if (changedSourceFiles.length === 0) {
+          if (!quiet) console.log(pc.dim(`No changed source files in ${projectDirectory}, skipping.`));
+          continue;
+        }
+        includePaths = changedSourceFiles;
+        if (!quiet) {
+          if (diffInfo.isCurrentChanges) {
+            console.log("Scanning uncommitted changes.");
+          } else {
+            console.log(`Scanning changes: ${diffInfo.currentBranch} -> ${diffInfo.baseBranch}`);
+          }
+          console.log("");
+        }
+      } else if (!quiet) {
+        console.log(pc.dim(`Cannot detect diff for ${projectDirectory}; scanning all files.`));
+        console.log("");
+      }
+    }
+
+    const result = await diagnose(projectDirectory, {
+      verbose: flags.verbose,
+      configPath: flags.config,
+      includePaths,
+      respectInlineDisables: resolveRespectInlineDisables(flags),
+    });
+    scans.push({ directory: projectDirectory, result });
+  }
+
+  const report = toJsonReportFromScans(rootDirectory, scans, {
+    mode,
+    diff: mode === "diff" ? reportDiff : null,
+    elapsedMilliseconds: performance.now() - start,
+  });
+  const diagnostics = getAllDiagnostics(scans);
+
+  if (flags.staged && scans.length === 0) {
+    if (flags.json) {
+      process.stdout.write(`${JSON.stringify(report, null, flags.jsonCompact ? 0 : 2)}\n`);
+    } else if (!flags.score && !flags.annotations) {
+      console.log(pc.dim("No staged source files found."));
+    }
+    return;
+  }
+
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(report, null, flags.jsonCompact ? 0 : 2)}\n`);
+  } else if (flags.score) {
+    process.stdout.write(`${getWorstScore(scans).score}\n`);
+  } else if (flags.annotations) {
+    printAnnotations(diagnostics);
+  } else if (scans.length === 0) {
+    console.log(pc.green("No Vue source files matched this scan."));
+    printScore({ score: 100, label: "Great" });
+  } else {
+    const fullDiagnosticsPath =
+      flags.verbose || diagnostics.length === 0 ? null : writeFullReport(rootDirectory, report);
+    for (const [index, scan] of scans.entries()) {
+      if (scans.length > 1) {
+        console.log(pc.bold(`Project ${index + 1}/${scans.length}: ${scan.result.project.projectName}`));
+        console.log("");
+      }
+      printRunHeader(scan.result);
+      printDiagnostics(scan.result.diagnostics, Boolean(flags.verbose || flags.prComment));
+      printRunFooter(scan.result, scans.length === 1 ? fullDiagnosticsPath : null);
+      if (index < scans.length - 1) console.log("");
+    }
+    if (scans.length > 1 && fullDiagnosticsPath) {
+      console.log("");
+      console.log(pc.dim(`Full diagnostics written to ${fullDiagnosticsPath}`));
+    }
+  }
+
+  process.exitCode = shouldFail(diagnostics, failOn) ? 1 : 0;
+};
+
+const runInstall = async (flags: InstallFlags): Promise<void> => {
+  console.log(`vue-doctor v${VERSION}`);
+  console.log("");
+  await runInstallSkill({
+    yes: flags.yes,
+    dryRun: flags.dryRun,
+    cwd: flags.cwd,
+  });
+};
+
 export const runCli = async (argv = process.argv): Promise<void> => {
   const program = new Command();
   program
     .name("vue-doctor")
-    .description("Scan Vue codebases for security, performance, correctness, accessibility, and architecture issues.")
+    .description("Scan Vue codebases for security, performance, correctness, accessibility, bundle-size, design, and architecture issues.")
     .argument("[directory]", "project directory to scan", ".")
     .version(VERSION, "-v, --version")
     .option("--verbose", "show every diagnostic", false)
     .option("--json", "output a single structured JSON report", false)
+    .option("--json-compact", "with --json, emit compact JSON", false)
     .option("--score", "output only the score", false)
     .option("--annotations", "output GitHub Actions annotations", false)
+    .option("--pr-comment", "tune terminal output for sticky PR comments", false)
+    .option("-y, --yes", "skip prompts and scan all detected workspace projects", false)
+    .option("--full", "force a full scan and ignore config diff / --diff", false)
+    .option("--project <name>", "workspace project(s) to scan; repeat by comma-separating names")
+    .option("--diff [base]", "scan files changed vs base branch; pass false to disable")
+    .option("--staged", "scan staged git files", false)
+    .option("--offline", "accepted for React Doctor parity; Vue Doctor always scores locally", false)
     .option("--fail-on <level>", "exit with error on diagnostics: error, warning, none", DEFAULT_FAIL_ON)
     .option("--config <path>", "path to vue-doctor.config.json")
     .option("--include <path>", "file or directory to scan; can be repeated or comma-separated", parseInclude, [])
-    .allowExcessArguments(false);
+    .option("--explain <file:line>", "show diagnostics and suppressed diagnostics near a specific location")
+    .option("--why <file:line>", "alias for --explain")
+    .option("--respect-inline-disables", "respect inline vue-doctor/eslint/oxlint disable comments")
+    .option("--no-respect-inline-disables", "audit mode: ignore inline disable comments")
+    .allowExcessArguments(false)
+    .action(runInspect);
 
-  program.parse(argv);
-  const directory = program.args[0] ?? ".";
-  const flags = program.opts<CliFlags>();
-  const failOn = VALID_FAIL_ON_LEVELS.has(flags.failOn as FailOnLevel)
-    ? (flags.failOn as FailOnLevel)
-    : DEFAULT_FAIL_ON;
+  program
+    .command("install")
+    .alias("setup")
+    .description("Install the vue-doctor skill into detected coding agents")
+    .option("-y, --yes", "skip prompts and install for all detected agents", false)
+    .option("--dry-run", "show what would be installed without writing files", false)
+    .option("-c, --cwd <cwd>", "working directory", process.cwd())
+    .action(runInstall);
+
+  process.stdout.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EPIPE") process.exit(0);
+  });
 
   try {
-    const result = await diagnose(directory, {
-      verbose: flags.verbose,
-      configPath: flags.config,
-      includePaths: flags.include,
-    });
-
-    if (flags.json) {
-      process.stdout.write(`${JSON.stringify(toJsonReport(directory, result), null, 2)}\n`);
-    } else if (flags.score) {
-      process.stdout.write(`${result.score.score}\n`);
-    } else if (flags.annotations) {
-      printAnnotations(result.diagnostics);
-    } else {
-      const fullDiagnosticsPath =
-        flags.verbose || result.diagnostics.length === 0 ? null : writeFullDiagnostics(directory, result);
-      printRunHeader(result);
-      printDiagnostics(result.diagnostics, Boolean(flags.verbose));
-      printRunFooter(result, fullDiagnosticsPath);
-    }
-
-    process.exitCode = shouldFail(result.diagnostics, failOn) ? 1 : 0;
+    await program.parseAsync(argv);
   } catch (error) {
+    const flags = program.opts<CliFlags>();
     if (flags.json) {
       process.stdout.write(
         `${JSON.stringify(
@@ -374,11 +660,11 @@ export const runCli = async (argv = process.argv): Promise<void> => {
             schemaVersion: 1,
             version: VERSION,
             ok: false,
-            directory,
+            directory: path.resolve(program.args[0] ?? "."),
             error: error instanceof Error ? { name: error.name, message: error.message } : { name: "Error", message: String(error) },
           },
           null,
-          2,
+          flags.jsonCompact ? 0 : 2,
         )}\n`,
       );
     } else {

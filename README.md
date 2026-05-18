@@ -14,14 +14,22 @@ It understands Vue single-file components through the official Vue compiler, so 
 Run this at your project root:
 
 ```bash
-npx -y @rekl0w/vue-doctor .
+npx @rekl0w/vue-doctor@latest
 ```
+
+Teach your coding agent the same Vue rules:
+
+```bash
+npx @rekl0w/vue-doctor@latest install
+```
+
+Use `--yes` to install for every detected agent without prompts, or `--dry-run` to preview the targets.
 
 Or install it in a repo:
 
 ```bash
 npm install -D @rekl0w/vue-doctor
-npx vue-doctor .
+npx vue-doctor
 ```
 
 The CLI prints a score:
@@ -40,10 +48,12 @@ Vue Doctor ships with focused rules that catch problems Vue teams repeatedly rev
 | --- | --- |
 | Security | `no-v-html`, `no-target-blank-without-rel`, `no-eval`, `no-hardcoded-secret` |
 | Correctness | `require-v-for-key`, `no-index-key`, `no-v-if-with-v-for`, `no-template-side-effects`, `no-mutating-props`, `no-vue2-deprecated-api` |
-| Performance | `no-expensive-template-expression`, `no-deep-watch`, `watch-requires-cleanup` |
-| Accessibility | `require-img-alt`, `require-button-name`, `no-autofocus` |
+| Performance | `no-expensive-template-expression`, `no-deep-watch`, `watch-requires-cleanup`, `no-transition-all`, `no-permanent-will-change` |
+| Accessibility | `require-img-alt`, `require-button-name`, `no-autofocus`, `no-disabled-zoom` |
 | Architecture | `no-large-component`, `no-too-many-props` |
 | Maintainability | `prefer-scoped-style` |
+| Bundle Size | `no-full-lodash-import`, `no-moment`, `prefer-dynamic-import` |
+| Design | `no-outline-none`, `no-tiny-text`, `no-wide-letter-spacing`, `no-z-index-9999`, `no-pure-black-background`, `no-gradient-text` |
 
 The scanner respects `.gitignore`, `.eslintignore`, `.prettierignore`, `.vue-doctorignore`, and `vue-doctor.config.json` ignores.
 
@@ -56,21 +66,31 @@ Options:
   -v, --version          display the version number
   --verbose              show every diagnostic
   --json                 output a structured JSON report
+  --json-compact         with --json, emit compact JSON
   --score                output only the numeric score
   --annotations          output GitHub Actions annotations
-  --fail-on <level>      exit with error on diagnostics: error, warning, none
+  --project <name>       workspace project(s) to scan
+  --diff [base]          scan changed files vs base branch
+  --staged               scan staged git files
+  --full                 force a full scan
+  --offline              accepted for React Doctor parity; scoring is local
+  --fail-on <level>      exit with error on diagnostics: error, warning, none (default: error)
   --config <path>        path to vue-doctor.config.json
   --include <path>       file or directory to scan; repeat or comma-separate
+  --explain <file:line>  show active and suppressed diagnostics near a line
   -h, --help             display help
 ```
 
 Examples:
 
 ```bash
-npx vue-doctor .
+npx @rekl0w/vue-doctor@latest
 npx vue-doctor apps/web --verbose
-npx vue-doctor . --json > vue-doctor-report.json
-npx vue-doctor . --fail-on warning
+npx vue-doctor --diff main --fail-on warning
+npx vue-doctor --staged
+npx vue-doctor --project web,admin --json
+npx vue-doctor --json > vue-doctor-report.json
+npx vue-doctor --fail-on warning
 ```
 
 ## Configuration
@@ -80,8 +100,13 @@ Create `vue-doctor.config.json` in your repo:
 ```json
 {
   "failOn": "warning",
+  "diff": "main",
   "maxComponentLines": 320,
   "maxProps": 12,
+  "categories": {
+    "Design": "off",
+    "Bundle Size": "warning"
+  },
   "ignore": {
     "rules": ["vue-doctor/prefer-scoped-style"],
     "files": ["src/generated/**"],
@@ -139,10 +164,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Rekl0w/vue-doctor@v0.1.3
+        with:
+          fetch-depth: 0
+      - uses: Rekl0w/vue-doctor@v0.2.0
         id: vue-doctor
         with:
           directory: .
+          diff: main
           fail-on: warning
           annotations: true
           json: true
@@ -164,11 +192,13 @@ The action exposes the numeric health score as an output:
 ${{ steps.vue-doctor.outputs.score }}
 ```
 
+Inputs: `directory`, `verbose`, `project`, `diff`, `github-token`, `fail-on`, `offline`, `annotations`, `json`, `report-path`, and `node-version`.
+
 Prefer not to use the action? The package works directly:
 
 ```yaml
-- run: npx -y @rekl0w/vue-doctor . --fail-on warning --annotations
-- run: npx -y @rekl0w/vue-doctor . --json --fail-on none > vue-doctor-report.json
+- run: npx @rekl0w/vue-doctor@latest --fail-on warning --annotations
+- run: npx @rekl0w/vue-doctor@latest --json --fail-on none > vue-doctor-report.json
 ```
 
 ## Node API

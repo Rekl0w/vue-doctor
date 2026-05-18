@@ -1,4 +1,4 @@
-export const VERSION = "0.1.2";
+export const VERSION = "0.2.0";
 
 export const PLUGIN_NAME = "vue-doctor";
 
@@ -39,4 +39,4 @@ export const SCORE_OK_THRESHOLD = 50;
 
 export const DEFAULT_MAX_COMPONENT_LINES = 350;
 export const DEFAULT_MAX_PROPS = 14;
-export const DEFAULT_FAIL_ON = "none";
+export const DEFAULT_FAIL_ON = "error";

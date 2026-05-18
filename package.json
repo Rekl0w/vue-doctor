@@ -1,6 +1,6 @@
 {
   "name": "@rekl0w/vue-doctor",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Diagnose Vue codebases for security, performance, correctness, accessibility, and architecture issues",
   "keywords": [
     "accessibility",
@@ -35,6 +35,7 @@
     "bin/**",
     "dist/**/*.js",
     "dist/**/*.d.ts",
+    "skills/**",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
@@ -67,6 +68,7 @@
   "dependencies": {
     "@vue/compiler-dom": "^3.5.0",
     "@vue/compiler-sfc": "^3.5.0",
+    "agent-install": "^0.0.5",
     "commander": "^14.0.0",
     "ignore": "^7.0.0",
     "minimatch": "^10.0.0",

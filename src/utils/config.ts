@@ -39,6 +39,17 @@ const asFailOn = (value: unknown): FailOnLevel | undefined => {
   return undefined;
 };
 
+const asDiff = (value: unknown): boolean | string | undefined => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed === "false") return false;
+    if (trimmed === "true") return true;
+    if (trimmed.length > 0) return trimmed;
+  }
+  return undefined;
+};
+
 const asRuleLevelMap = (value: unknown): Record<string, RuleLevel> | undefined => {
   if (!isObject(value)) return undefined;
   const result: Record<string, RuleLevel> = {};
@@ -66,11 +77,13 @@ const normalizeConfig = (raw: Record<string, unknown>): VueDoctorConfig => {
     rootDir: typeof raw.rootDir === "string" ? raw.rootDir : undefined,
     verbose: asBoolean(raw.verbose),
     failOn: asFailOn(raw.failOn) ?? DEFAULT_FAIL_ON,
+    diff: asDiff(raw.diff),
     include: asStringArray(raw.include),
     maxComponentLines: asPositiveInteger(raw.maxComponentLines),
     maxProps: asPositiveInteger(raw.maxProps),
     respectInlineDisables: asBoolean(raw.respectInlineDisables),
     rules: asRuleLevelMap(raw.rules),
+    categories: asRuleLevelMap(raw.categories),
     ignore: {
       rules: asStringArray(ignore.rules),
       files: asStringArray(ignore.files),
@@ -146,6 +159,10 @@ export const mergeConfig = (
     rules: {
       ...loadedConfig.rules,
       ...override.rules,
+    },
+    categories: {
+      ...loadedConfig.categories,
+      ...override.categories,
     },
   };
 };

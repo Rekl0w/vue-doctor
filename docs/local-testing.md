@@ -31,9 +31,9 @@ From your Vue project:
 
 ```powershell
 cd C:\Users\Windows\Desktop\your-vue-project
-vue-doctor . --verbose
-vue-doctor . --json > vue-doctor-report.json
-vue-doctor . --fail-on warning
+vue-doctor --verbose
+vue-doctor --json > vue-doctor-report.json
+vue-doctor --fail-on warning
 ```
 
 When you are done testing:
@@ -58,8 +58,8 @@ From your Vue project:
 
 ```powershell
 cd C:\Users\Windows\Desktop\your-vue-project
-npm install -D C:\Users\Windows\Desktop\vue-doctor\.local-pack\rekl0w-vue-doctor-0.1.2.tgz
-npx vue-doctor . --verbose
+npm install -D C:\Users\Windows\Desktop\vue-doctor\.local-pack\rekl0w-vue-doctor-0.2.0.tgz
+npx vue-doctor --verbose
 ```
 
 Remove the local test package later:
@@ -71,12 +71,12 @@ npm uninstall @rekl0w/vue-doctor
 ## Useful Smoke Commands
 
 ```powershell
-vue-doctor . --score
-vue-doctor . --json
+vue-doctor --score
+vue-doctor --json
 vue-doctor src --include src
-vue-doctor . --fail-on none
-vue-doctor . --fail-on error
-vue-doctor . --annotations
+vue-doctor --fail-on none
+vue-doctor --fail-on error
+vue-doctor --annotations
 ```
 
 ## Expected Output

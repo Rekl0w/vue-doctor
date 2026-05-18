@@ -160,6 +160,46 @@ const scanVue2DeprecatedApi = (source: string, lineOffset: number, context: Scan
   }
 };
 
+const scanBundleSizeImports = (source: string, lineOffset: number, context: ScanContext): void => {
+  reportRegexMatches(context, source, lineOffset, /\bimport\s+(?:\*\s+as\s+\w+|\w+)\s+from\s+["']lodash["']/g, {
+    rule: "no-full-lodash-import",
+    severity: "warning",
+    category: "Bundle Size",
+    message: "Full lodash import pulls a large utility bundle into client code.",
+    help: "Import the specific function path, use lodash-es tree-shaken imports, or prefer native JavaScript.",
+  });
+  reportRegexMatches(context, source, lineOffset, /\brequire\s*\(\s*["']lodash["']\s*\)/g, {
+    rule: "no-full-lodash-import",
+    severity: "warning",
+    category: "Bundle Size",
+    message: "Requiring lodash pulls a large utility bundle into client code.",
+    help: "Require a specific lodash function path or prefer native JavaScript.",
+  });
+  reportRegexMatches(context, source, lineOffset, /\bimport\s+[\s\S]{0,80}\s+from\s+["']moment["']/g, {
+    rule: "no-moment",
+    severity: "warning",
+    category: "Bundle Size",
+    message: "moment is heavy for browser bundles and is rarely tree-shaken.",
+    help: "Prefer Intl APIs, dayjs, date-fns, or a route-level dynamic import if moment is unavoidable.",
+  });
+  reportRegexMatches(context, source, lineOffset, /\brequire\s*\(\s*["']moment["']\s*\)/g, {
+    rule: "no-moment",
+    severity: "warning",
+    category: "Bundle Size",
+    message: "moment is heavy for browser bundles and is rarely tree-shaken.",
+    help: "Prefer Intl APIs, dayjs, date-fns, or a route-level dynamic import if moment is unavoidable.",
+  });
+
+  const heavyPackages = "(?:monaco-editor|echarts|chart\\.js|three|mapbox-gl|pdfjs-dist)";
+  reportRegexMatches(context, source, lineOffset, new RegExp(`\\bimport\\s+[\\s\\S]{0,120}\\s+from\\s+["']${heavyPackages}["']`, "g"), {
+    rule: "prefer-dynamic-import",
+    severity: "warning",
+    category: "Bundle Size",
+    message: "Heavy browser-only dependency is imported eagerly.",
+    help: "Use dynamic import() inside the route, component, or interaction that needs this library.",
+  });
+};
+
 export const scanScript = (source: string, lineOffset: number, context: ScanContext): void => {
   reportRegexMatches(context, source, lineOffset, /\beval\s*\(/g, {
     rule: "no-eval",
@@ -188,6 +228,7 @@ export const scanScript = (source: string, lineOffset: number, context: ScanCont
   scanTooManyProps(source, lineOffset, context);
   scanWatchCleanup(source, lineOffset, context);
   scanVue2DeprecatedApi(source, lineOffset, context);
+  scanBundleSizeImports(source, lineOffset, context);
 
   reportRegexMatches(context, source, lineOffset, /\bdeep\s*:\s*true\b/g, {
     rule: "no-deep-watch",

@@ -1,11 +1,13 @@
-export { diagnose, summarizeDiagnostics, toJsonReport } from "./scanner.js";
+export { diagnose, summarizeDiagnostics, toJsonReport, toJsonReportFromScans } from "./scanner.js";
 export { rules } from "./rules/index.js";
 export type {
   Diagnostic,
+  DiffInfo,
   DiagnoseOptions,
   DiagnoseResult,
   FailOnLevel,
   JsonReport,
+  JsonReportMode,
   ProjectInfo,
   RuleDefinition,
   RuleLevel,

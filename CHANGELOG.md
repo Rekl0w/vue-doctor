@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+- Added React Doctor-style CLI workflows: `--diff`, `--staged`, `--project`, `--full`, `--json-compact`, `--offline`, and `--explain`.
+- Added the `vue-doctor install` command and bundled coding-agent skill instructions.
+- Added GitHub Action inputs for `project`, `diff`, and `offline`.
+- Added bundle-size, design, and style-performance rule families.
+- Changed the recommended one-shot command to `npx @rekl0w/vue-doctor@latest`.
+- Avoided reporting a misleading score when `--staged --score` has no staged Vue source files.
+
 ## 0.1.3
 
 - Changed GitHub Action pull request comments to render Markdown summaries from JSON reports instead of raw ANSI terminal output.

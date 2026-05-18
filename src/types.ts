@@ -10,7 +10,9 @@ export type DiagnosticCategory =
   | "Performance"
   | "Accessibility"
   | "Architecture"
-  | "Maintainability";
+  | "Maintainability"
+  | "Bundle Size"
+  | "Design";
 
 export interface Diagnostic {
   filePath: string;
@@ -50,8 +52,10 @@ export interface VueDoctorConfig {
   rootDir?: string | undefined;
   ignore?: VueDoctorIgnoreConfig | undefined;
   rules?: Record<string, RuleLevel> | undefined;
+  categories?: Record<string, RuleLevel> | undefined;
   verbose?: boolean | undefined;
   failOn?: FailOnLevel | undefined;
+  diff?: boolean | string | undefined;
   include?: string[] | undefined;
   maxComponentLines?: number | undefined;
   maxProps?: number | undefined;
@@ -99,6 +103,15 @@ export interface DiagnoseResult {
   elapsedMilliseconds: number;
 }
 
+export type JsonReportMode = "full" | "diff" | "staged";
+
+export interface DiffInfo {
+  currentBranch: string;
+  baseBranch: string;
+  changedFiles: string[];
+  isCurrentChanges?: boolean | undefined;
+}
+
 export interface JsonReportSummary {
   errorCount: number;
   warningCount: number;
@@ -113,7 +126,16 @@ export interface JsonReport {
   version: string;
   ok: boolean;
   directory: string;
+  mode?: JsonReportMode | undefined;
+  diff?: DiffInfo | null | undefined;
   project: ProjectInfo;
+  projects?: Array<{
+    directory: string;
+    project: ProjectInfo;
+    diagnostics: Diagnostic[];
+    summary: JsonReportSummary;
+    elapsedMilliseconds: number;
+  }> | undefined;
   diagnostics: Diagnostic[];
   summary: JsonReportSummary;
   elapsedMilliseconds: number;

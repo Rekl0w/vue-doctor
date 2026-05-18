@@ -11,9 +11,11 @@ import { scanTemplate } from "./rules/template.js";
 import type {
   Diagnostic,
   DiagnosticInput,
+  DiffInfo,
   DiagnoseOptions,
   DiagnoseResult,
   JsonReport,
+  JsonReportMode,
   ProjectInfo,
   RuleLevel,
   ScanContext,
@@ -32,11 +34,27 @@ const getRuleLevel = (config: VueDoctorConfig, ruleName: string): RuleLevel | un
   return rules[ruleName] ?? rules[`${PLUGIN_NAME}/${ruleName}`];
 };
 
+const normalizeCategoryName = (category: string): string =>
+  category.toLowerCase().replace(/[\s_-]+/g, "-");
+
+const getCategoryLevel = (
+  config: VueDoctorConfig,
+  category: string,
+): RuleLevel | undefined => {
+  const categories = config.categories ?? {};
+  const normalizedCategory = normalizeCategoryName(category);
+  for (const [configuredCategory, level] of Object.entries(categories)) {
+    if (normalizeCategoryName(configuredCategory) === normalizedCategory) return level;
+  }
+  return undefined;
+};
+
 const resolveSeverity = (
   config: VueDoctorConfig,
   ruleName: string,
+  category: string,
   fallback: Severity,
-): Severity | "off" => getRuleLevel(config, ruleName) ?? fallback;
+): Severity | "off" => getRuleLevel(config, ruleName) ?? getCategoryLevel(config, category) ?? fallback;
 
 const ruleIsGloballyIgnored = (config: VueDoctorConfig, ruleName: string): boolean => {
   const ignoredRules = config.ignore?.rules ?? [];
@@ -66,7 +84,7 @@ const toDiagnostic = (
   const ruleName = normalizeRuleName(input.rule);
   const definition = ruleByName.get(ruleName);
   const defaultSeverity = input.severity ?? definition?.defaultSeverity ?? "warning";
-  const severity = resolveSeverity(context.config, ruleName, defaultSeverity);
+  const severity = resolveSeverity(context.config, ruleName, input.category, defaultSeverity);
 
   if (severity === "off") return null;
   if (ruleIsGloballyIgnored(context.config, ruleName)) return null;
@@ -244,5 +262,100 @@ export const toJsonReport = (
       scoreLabel: result.score.label,
     },
     elapsedMilliseconds: result.elapsedMilliseconds,
+  };
+};
+
+interface JsonReportScan {
+  directory: string;
+  result: DiagnoseResult;
+}
+
+const scoreLabelFromValue = (score: number): DiagnoseResult["score"]["label"] => {
+  if (score >= 75) return "Great";
+  if (score >= 50) return "Needs work";
+  return "Critical";
+};
+
+const buildAggregateProject = (directory: string, scans: JsonReportScan[]): ProjectInfo => {
+  if (scans.length === 1) return scans[0]!.result.project;
+  return {
+    rootDirectory: path.resolve(directory),
+    projectName: path.basename(path.resolve(directory)),
+    vueVersion: null,
+    framework: "unknown",
+    hasTypeScript: scans.some((scan) => scan.result.project.hasTypeScript),
+    hasPinia: scans.some((scan) => scan.result.project.hasPinia),
+    hasVueRouter: scans.some((scan) => scan.result.project.hasVueRouter),
+    sourceFileCount: scans.reduce((total, scan) => total + scan.result.project.sourceFileCount, 0),
+  };
+};
+
+export const toJsonReportFromScans = (
+  directory: string,
+  scans: JsonReportScan[],
+  options: {
+    mode?: JsonReportMode;
+    diff?: DiffInfo | null;
+    elapsedMilliseconds?: number;
+  } = {},
+): JsonReport => {
+  if (scans.length === 1) {
+    const report = toJsonReport(scans[0]!.directory, scans[0]!.result);
+    return {
+      ...report,
+      directory: path.resolve(directory),
+      mode: options.mode,
+      diff: options.diff,
+      projects: [
+        {
+          directory: path.resolve(scans[0]!.directory),
+          project: scans[0]!.result.project,
+          diagnostics: scans[0]!.result.diagnostics,
+          summary: report.summary,
+          elapsedMilliseconds: scans[0]!.result.elapsedMilliseconds,
+        },
+      ],
+      elapsedMilliseconds: options.elapsedMilliseconds ?? report.elapsedMilliseconds,
+    };
+  }
+
+  const diagnostics = scans.flatMap((scan) => scan.result.diagnostics);
+  const summary = summarizeDiagnostics(diagnostics);
+  const score = scans.length > 0
+    ? Math.min(...scans.map((scan) => scan.result.score.score))
+    : 100;
+  const aggregateProject = buildAggregateProject(directory, scans);
+
+  return {
+    schemaVersion: 1,
+    version: VERSION,
+    ok: true,
+    directory: path.resolve(directory),
+    mode: options.mode,
+    diff: options.diff,
+    project: aggregateProject,
+    projects: scans.map((scan) => {
+      const projectSummary = summarizeDiagnostics(scan.result.diagnostics);
+      return {
+        directory: path.resolve(scan.directory),
+        project: scan.result.project,
+        diagnostics: scan.result.diagnostics,
+        summary: {
+          ...projectSummary,
+          score: scan.result.score.score,
+          scoreLabel: scan.result.score.label,
+        },
+        elapsedMilliseconds: scan.result.elapsedMilliseconds,
+      };
+    }),
+    diagnostics,
+    summary: {
+      ...summary,
+      score,
+      scoreLabel: scoreLabelFromValue(score),
+    },
+    elapsedMilliseconds:
+      options.elapsedMilliseconds ??
+      scans.reduce((total, scan) => total + scan.result.elapsedMilliseconds, 0),
   };
 };

@@ -257,6 +257,25 @@ const inspectElement = (node: ElementNode, lineOffset: number, report: ScanConte
     );
   }
 
+  if (node.tag === "meta") {
+    const name = normalizeExpression(getAttributeValue(node, "name") ?? "");
+    const content = getAttributeValue(node, "content") ?? "";
+    if (
+      name === "viewport" &&
+      /\b(?:user-scalable\s*=\s*no|maximum-scale\s*=\s*1(?:\.0+)?)\b/i.test(content)
+    ) {
+      report(
+        makeDiagnostic("no-disabled-zoom", lineOffset, localLine, {
+          severity: "warning",
+          category: "Accessibility",
+          message: "Viewport settings disable or cap user zoom.",
+          help: "Let users pinch zoom; avoid user-scalable=no and maximum-scale=1.",
+          column: node.loc.start.column,
+        }),
+      );
+    }
+  }
+
   for (const prop of node.props) {
     if (isDirective(prop) && shouldCheckDirectiveExpressionPurity(prop)) {
       visitExpression(prop.exp?.loc.source, lineOffset, prop.loc.start.line, report);

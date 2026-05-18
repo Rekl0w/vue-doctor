@@ -249,4 +249,72 @@ const filters = props.filters
     expect(report.summary.totalDiagnosticCount).toBe(1);
     expect(report.diagnostics[0]?.rule).toBe("require-img-alt");
   });
+
+  it("detects bundle-size, design, and style-performance issues", async () => {
+    const root = makeProject({
+      "src/App.vue": `
+<template>
+  <meta name="viewport" content="width=device-width, maximum-scale=1">
+</template>
+<script setup>
+import _ from 'lodash'
+import moment from 'moment'
+import * as monaco from 'monaco-editor'
+</script>
+<style scoped>
+.panel {
+  transition: all 200ms ease;
+  will-change: transform;
+  outline: none;
+  font-size: 10px;
+  letter-spacing: -0.02em;
+  z-index: 9999;
+  background: #000;
+  background-image: linear-gradient(red, blue);
+  background-clip: text;
+}
+</style>
+`,
+    });
+
+    const result = await diagnose(root);
+    const rules = result.diagnostics.map((diagnostic) => diagnostic.rule);
+
+    expect(rules).toContain("no-disabled-zoom");
+    expect(rules).toContain("no-full-lodash-import");
+    expect(rules).toContain("no-moment");
+    expect(rules).toContain("prefer-dynamic-import");
+    expect(rules).toContain("no-transition-all");
+    expect(rules).toContain("no-permanent-will-change");
+    expect(rules).toContain("no-outline-none");
+    expect(rules).toContain("no-tiny-text");
+    expect(rules).toContain("no-wide-letter-spacing");
+    expect(rules).toContain("no-z-index-9999");
+    expect(rules).toContain("no-pure-black-background");
+    expect(rules).toContain("no-gradient-text");
+  });
+
+  it("honors category-level config overrides", async () => {
+    const root = makeProject({
+      "vue-doctor.config.json": JSON.stringify({
+        categories: {
+          Design: "off",
+          "Bundle Size": "error",
+        },
+      }),
+      "src/App.vue": `
+<script setup>
+import _ from 'lodash'
+</script>
+<style scoped>
+.button { outline: none; }
+</style>
+`,
+    });
+
+    const result = await diagnose(root);
+
+    expect(result.diagnostics.map((diagnostic) => diagnostic.rule)).not.toContain("no-outline-none");
+    expect(result.diagnostics.find((diagnostic) => diagnostic.rule === "no-full-lodash-import")?.severity).toBe("error");
+  });
 });

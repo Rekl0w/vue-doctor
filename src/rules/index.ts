@@ -80,6 +80,18 @@ export const rules: RuleDefinition[] = [
     description: "Async watchers should use cleanup or cancellation.",
   },
   {
+    name: "no-transition-all",
+    defaultSeverity: "warning",
+    category: "Performance",
+    description: "Avoid transition: all because it can animate layout and paint-heavy properties.",
+  },
+  {
+    name: "no-permanent-will-change",
+    defaultSeverity: "warning",
+    category: "Performance",
+    description: "Avoid persistent will-change declarations that keep layers promoted.",
+  },
+  {
     name: "require-img-alt",
     defaultSeverity: "warning",
     category: "Accessibility",
@@ -98,6 +110,12 @@ export const rules: RuleDefinition[] = [
     description: "Avoid autofocus stealing focus on navigation.",
   },
   {
+    name: "no-disabled-zoom",
+    defaultSeverity: "warning",
+    category: "Accessibility",
+    description: "Avoid viewport settings that disable pinch zoom.",
+  },
+  {
     name: "no-large-component",
     defaultSeverity: "warning",
     category: "Architecture",
@@ -114,6 +132,60 @@ export const rules: RuleDefinition[] = [
     defaultSeverity: "warning",
     category: "Maintainability",
     description: "Prefer scoped or module styles in SFCs.",
+  },
+  {
+    name: "no-full-lodash-import",
+    defaultSeverity: "warning",
+    category: "Bundle Size",
+    description: "Avoid importing all of lodash into client bundles.",
+  },
+  {
+    name: "no-moment",
+    defaultSeverity: "warning",
+    category: "Bundle Size",
+    description: "Avoid moment in browser bundles when lighter date utilities are enough.",
+  },
+  {
+    name: "prefer-dynamic-import",
+    defaultSeverity: "warning",
+    category: "Bundle Size",
+    description: "Lazy-load heavy browser-only libraries from the interaction or route that needs them.",
+  },
+  {
+    name: "no-outline-none",
+    defaultSeverity: "warning",
+    category: "Design",
+    description: "Avoid removing focus outlines without an accessible replacement.",
+  },
+  {
+    name: "no-tiny-text",
+    defaultSeverity: "warning",
+    category: "Design",
+    description: "Avoid text sizes that are hard to read on desktop and mobile.",
+  },
+  {
+    name: "no-wide-letter-spacing",
+    defaultSeverity: "warning",
+    category: "Design",
+    description: "Avoid excessive or negative letter spacing that hurts readability.",
+  },
+  {
+    name: "no-z-index-9999",
+    defaultSeverity: "warning",
+    category: "Design",
+    description: "Avoid magic z-index values that make layering hard to maintain.",
+  },
+  {
+    name: "no-pure-black-background",
+    defaultSeverity: "warning",
+    category: "Design",
+    description: "Avoid pure black backgrounds that create harsh contrast.",
+  },
+  {
+    name: "no-gradient-text",
+    defaultSeverity: "warning",
+    category: "Design",
+    description: "Avoid gradient text unless the brand system explicitly requires it.",
   },
 ];
 
