@@ -38,6 +38,12 @@ afterEach(() => {
 });
 
 describe("CLI smoke", () => {
+  it("prints detailed version information", () => {
+    const output = runCli(["version"]);
+    expect(output).toContain("vue-doctor 0.4.0");
+    expect(output).toContain("node ");
+  });
+
   it("emits JSON, Markdown, and SARIF reports", () => {
     const root = makeProject();
 
@@ -58,6 +64,17 @@ describe("CLI smoke", () => {
     expect(sarif.runs[0]?.results[0]?.ruleId).toBe("vue-doctor/require-img-alt");
   });
 
+  it("prints a branded human report with source frames", () => {
+    const root = makeProject();
+    const output = runCli([root, "--verbose", "--fail-on", "none", "--handoff", "skip"]);
+
+    expect(output).toContain("Vue Doctor");
+    expect(output).toContain("Vue-native diagnostics for agents, reviews, and CI.");
+    expect(output).toContain("Analyzing Vue source");
+    expect(output).toContain("require-img-alt");
+    expect(output).toContain("| <template><img src=\"/logo.png\"></template>");
+  });
+
   it("can write and apply a diagnostics baseline", () => {
     const root = makeProject();
     const baselinePath = path.join(root, "vue-doctor-baseline.json");
@@ -73,5 +90,51 @@ describe("CLI smoke", () => {
     };
     expect(filtered.summary.totalDiagnosticCount).toBe(0);
     expect(filtered.summary.score).toBe(100);
+  });
+
+  it("can scan a changed-files list without relying on local git diff state", () => {
+    const root = makeProject();
+    fs.writeFileSync(path.join(root, "src", "App.vue"), "<template><p>ok</p></template>\n");
+    fs.writeFileSync(path.join(root, "src", "Changed.vue"), "<template><p v-html=\"html\"></p></template>\n");
+    const changedFilesPath = path.join(root, "changed-files.txt");
+    fs.writeFileSync(changedFilesPath, "src/Changed.vue\n");
+
+    const json = JSON.parse(
+      runCli([root, "--json", "--fail-on", "none", "--changed-files-from", changedFilesPath]),
+    ) as {
+      mode: string;
+      diagnostics: Array<{ relativePath: string; rule: string }>;
+      summary: { totalDiagnosticCount: number };
+    };
+
+    expect(json.mode).toBe("changed-files");
+    expect(json.summary.totalDiagnosticCount).toBe(1);
+    expect(json.diagnostics[0]?.relativePath).toBe("src/Changed.vue");
+    expect(json.diagnostics[0]?.rule).toBe("no-v-html");
+  });
+
+  it("can scan with experimental worker-thread parallelism", () => {
+    const root = makeProject();
+    fs.writeFileSync(path.join(root, "src", "Clean.vue"), "<template><p>ok</p></template>\n");
+
+    const json = JSON.parse(
+      runCli([root, "--json", "--fail-on", "none", "--experimental-parallel", "2"]),
+    ) as {
+      diagnostics: Array<{ rule: string }>;
+      summary: { totalDiagnosticCount: number };
+    };
+
+    expect(json.summary.totalDiagnosticCount).toBe(1);
+    expect(json.diagnostics[0]?.rule).toBe("require-img-alt");
+  });
+
+  it("previews the expanded install onboarding flow", () => {
+    const root = makeProject();
+    const output = runCli(["install", "--dry-run", "--cwd", root, "--agent-hooks"]);
+
+    expect(output).toContain("Dry run");
+    expect(output).toContain("package script");
+    expect(output).toContain("GitHub Action");
+    expect(output).toContain("native agent hooks");
   });
 });

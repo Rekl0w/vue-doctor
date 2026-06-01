@@ -23,7 +23,7 @@ Teach your coding agent the same Vue rules:
 npx @rekl0w/vue-doctor@latest install
 ```
 
-Use `--yes` to install for every detected agent without prompts, or `--dry-run` to preview the targets.
+`install` now opens a setup wizard in interactive terminals and configures the project, not only the agent skill. It can add a `doctor` package script, install the dev dependency, write a GitHub Actions workflow, wire a pre-commit hook, and install the bundled coding-agent skill. Use `--yes` to accept the recommended setup without prompts, `--agent-hooks` to add native Claude/Cursor edit hooks when those project folders exist, or `--dry-run` to preview the exact work.
 
 Or install it in a repo:
 
@@ -38,7 +38,7 @@ The CLI prints a score:
 - 50 to 74: Needs work
 - 0 to 49: Critical
 
-Default output is compact: Vue Doctor groups diagnostics by category and rule, shows the most important examples, prints the score at the bottom, and writes the full JSON report to a temp file. Use `--verbose` when you want every file-level diagnostic in the terminal.
+Default output is compact and product-focused: Vue Doctor prints a branded run header, shows scan progress, groups diagnostics by category and rule, shows the most important examples, prints the score at the bottom, and writes the full JSON report to a temp file. Use `--verbose` when you want every file-level diagnostic with a source frame in the terminal.
 
 ## What It Checks
 
@@ -73,9 +73,11 @@ Options:
   --annotations          output GitHub Actions annotations
   --project <name>       workspace project(s) to scan
   --diff [base]          scan changed files vs base branch
+  --changed-files-from <path> scan source files listed in a newline, NUL, or JSON file
   --staged               scan staged git files
   --full                 force a full scan
   --offline              accepted for React Doctor parity; scoring is local
+  --experimental-parallel [workers] scan files in worker threads
   --fail-on <level>      exit with error on diagnostics: error, warning, none (default: error)
   --preset <name>        rule preset: recommended, strict, design
   --baseline <path>      ignore diagnostics already present in a baseline file
@@ -83,6 +85,9 @@ Options:
   --config <path>        path to vue-doctor.config.json
   --include <path>       file or directory to scan; repeat or comma-separate
   --explain <file:line>  show active and suppressed diagnostics near a line
+  --handoff [mode]       hand diagnostics to an agent: prompt, copy, print, codex, claude, cursor, skip
+  --copy-prompt          copy an agent-ready diagnostics prompt to the clipboard
+  --print-prompt         print an agent-ready diagnostics prompt
   -h, --help             display help
 ```
 
@@ -92,15 +97,22 @@ Examples:
 npx @rekl0w/vue-doctor@latest
 npx vue-doctor apps/web --verbose
 npx vue-doctor --diff main --fail-on warning
+npx vue-doctor --experimental-parallel 4 --fail-on none
 npx vue-doctor --staged
+npx vue-doctor --changed-files-from /tmp/changed-files.txt
 npx vue-doctor --project web,admin --json
 npx vue-doctor --json > vue-doctor-report.json
 npx vue-doctor --markdown > vue-doctor-report.md
 npx vue-doctor --sarif > vue-doctor.sarif
 npx vue-doctor --update-baseline vue-doctor-baseline.json --fail-on none
 npx vue-doctor --baseline vue-doctor-baseline.json --fail-on warning
+npx vue-doctor --copy-prompt --fail-on none
 npx vue-doctor --fail-on warning
 ```
+
+When diagnostics are found in an interactive terminal, Vue Doctor can hand them to an agent. It writes a full diagnostics directory, builds a focused repair prompt, and can launch Codex, Claude Code, or Cursor Agent when their CLIs are available. Non-interactive runs skip the prompt unless you pass `--copy-prompt`, `--print-prompt`, or `--handoff <mode>`.
+
+If you do not pass `--diff`, `--staged`, `--full`, `--include`, or `--changed-files-from`, interactive terminals can ask whether to scan changed files, staged files, or the full project. In coding-agent environments, Vue Doctor shows the repo setup hint once per project when the package script/dependency is not installed yet.
 
 ## Configuration
 
@@ -108,6 +120,7 @@ Create `vue-doctor.config.json` in your repo:
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/Rekl0w/vue-doctor/main/schema/config.json",
   "preset": "recommended",
   "failOn": "warning",
   "diff": "main",
@@ -194,19 +207,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: Rekl0w/vue-doctor@v0.3.0
+      - uses: Rekl0w/vue-doctor@v0.4.0
         id: vue-doctor
         with:
           directory: .
-          diff: main
           preset: strict
           fail-on: warning
           annotations: true
+          comment: true
           json: true
           report-path: vue-doctor-report.json
           sarif: true
           sarif-report-path: vue-doctor.sarif
-          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -217,15 +229,19 @@ jobs:
             ${{ steps.vue-doctor.outputs['sarif-report-path'] }}
 ```
 
-When `github-token` is set on pull requests, the action updates one Vue Doctor comment with a Markdown summary table and grouped diagnostics. The raw CLI output remains available in the workflow logs.
+On pull requests, the action asks GitHub for the changed file list and passes it to `--changed-files-from`; if that API is unavailable it falls back to the configured `diff` or a full scan. With `comment: true`, it updates one sticky Vue Doctor comment using the built-in GitHub token. Set `non-blocking: true` when you want annotations and comments without failing the workflow.
 
-The action exposes the numeric health score as an output:
+The action exposes health and issue metrics as outputs:
 
 ```yaml
 ${{ steps.vue-doctor.outputs.score }}
+${{ steps.vue-doctor.outputs.total-issues }}
+${{ steps.vue-doctor.outputs.error-count }}
+${{ steps.vue-doctor.outputs.warning-count }}
+${{ steps.vue-doctor.outputs.affected-files }}
 ```
 
-Inputs: `directory`, `verbose`, `project`, `diff`, `preset`, `baseline`, `update-baseline`, `github-token`, `fail-on`, `offline`, `annotations`, `json`, `report-path`, `markdown`, `markdown-report-path`, `sarif`, `sarif-report-path`, and `node-version`.
+Inputs: `directory`, `verbose`, `project`, `diff`, `preset`, `baseline`, `update-baseline`, `github-token`, `fail-on`, `offline`, `experimental-parallel`, `annotations`, `comment`, `non-blocking`, `json`, `report-path`, `markdown`, `markdown-report-path`, `sarif`, `sarif-report-path`, `version`, and `node-version`.
 
 Prefer not to use the action? The package works directly:
 

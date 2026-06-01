@@ -30,8 +30,10 @@ Fix errors first, then warnings. Use focused flags for automation:
 | Flag | Purpose |
 | --- | --- |
 | `--diff [base]` | Scan changed Vue source files vs the base branch |
+| `--changed-files-from <path>` | Scan an authoritative changed-file list from CI |
 | `--staged` | Scan staged source files for pre-commit workflows |
 | `--project <name>` | Scan one or more workspace projects |
+| `--experimental-parallel [workers]` | Use worker-thread scanning on larger repositories |
 | `--score` | Output only the numeric health score |
 | `--json` | Output a structured machine-readable report |
 | `--markdown` | Output a Markdown report |
@@ -40,6 +42,12 @@ Fix errors first, then warnings. Use focused flags for automation:
 | `--baseline <path>` | Ignore diagnostics already present in a baseline file |
 | `--update-baseline <path>` | Write the current diagnostics baseline |
 | `--fail-on warning` | Fail on any diagnostic |
+| `--copy-prompt` | Copy a focused repair prompt and diagnostics path for an agent |
+| `--print-prompt` | Print the focused repair prompt instead of copying it |
+
+When Vue Doctor prints or copies a handoff prompt, use the diagnostics directory named in the prompt as the source of truth. Fix root causes instead of suppressing rules, then rerun Vue Doctor with `--verbose --fail-on none`.
+
+In interactive terminals, Vue Doctor may ask whether to scan changed files, staged files, or the full project when no scan mode is provided. For automated agent runs, pass the intended mode explicitly, for example `--diff`, `--staged`, or `--full`.
 
 ## Suppressions
 

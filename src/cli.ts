@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -24,10 +24,13 @@ import type {
   VueDoctorConfig,
   VueDoctorPreset,
 } from "./types.js";
-import { getDiffInfo, getStagedSourceFiles, filterSourceFiles } from "./utils/git.js";
+import { getDiffInfo, getStagedSourceFiles, filterSourceFiles, readChangedFilesFromFile } from "./utils/git.js";
 import { loadConfig } from "./utils/config.js";
 import { toRelativePath } from "./utils/path.js";
-import { runInstallSkill } from "./utils/install-skill.js";
+import { runInstallOnboarding } from "./utils/install-onboarding.js";
+import { runAgentHandoff, type HandoffMode } from "./utils/agent-handoff.js";
+import { maybePrintSetupHint } from "./utils/setup-hint.js";
+import { canPrompt, printBrandHeader, promptChoice, runProductStep } from "./utils/terminal.js";
 import { selectProjectDirectories } from "./utils/workspaces.js";
 import { calculateScore } from "./utils/scoring.js";
 import { filterDiagnosticsByBaseline, readBaselineKeys, writeBaseline } from "./utils/baseline.js";
@@ -46,6 +49,7 @@ interface CliFlags {
   staged?: boolean;
   offline?: boolean;
   diff?: boolean | string;
+  changedFilesFrom?: string;
   project?: string;
   failOn?: string;
   preset?: string;
@@ -56,12 +60,20 @@ interface CliFlags {
   explain?: string;
   why?: string;
   respectInlineDisables?: boolean;
+  handoff?: string | boolean;
+  copyPrompt?: boolean;
+  printPrompt?: boolean;
+  color?: boolean;
+  experimentalParallel?: string | boolean;
 }
 
 interface InstallFlags {
   yes?: boolean | undefined;
   dryRun?: boolean | undefined;
   cwd?: string | undefined;
+  agentHooks?: boolean | undefined;
+  gitHook?: boolean | undefined;
+  githubAction?: boolean | undefined;
 }
 
 interface CompletedScan {
@@ -71,6 +83,7 @@ interface CompletedScan {
 
 const VALID_FAIL_ON_LEVELS = new Set<FailOnLevel>(["error", "warning", "none"]);
 const VALID_PRESETS = new Set<VueDoctorPreset>(["recommended", "strict", "design"]);
+const VALID_HANDOFF_MODES = new Set<HandoffMode>(["prompt", "copy", "print", "codex", "claude", "cursor", "skip"]);
 const MAX_RULES_PER_CATEGORY = 3;
 const SCORE_BAR_WIDTH = 44;
 const SYMBOLS = {
@@ -84,6 +97,24 @@ const parseInclude = (value: string, previous: string[] = []): string[] => [
   ...previous,
   ...value.split(",").map((entry) => entry.trim()).filter(Boolean),
 ];
+
+const isWithinDirectory = (directory: string, candidate: string): boolean => {
+  const relative = path.relative(directory, candidate);
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+};
+
+const filterChangedFilesForProject = (
+  rootDirectory: string,
+  projectDirectory: string,
+  changedFiles: string[],
+): string[] => {
+  const resolvedFiles = changedFiles.map((filePath) =>
+    path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(rootDirectory, filePath),
+  );
+  return resolvedFiles
+    .filter((filePath) => isWithinDirectory(projectDirectory, filePath) || filePath === projectDirectory)
+    .map((filePath) => path.relative(projectDirectory, filePath));
+};
 
 const colorByScore = (score: ScoreResult): ((text: string) => string) => {
   if (score.score >= 75) return pc.green;
@@ -104,6 +135,16 @@ const resolvePreset = (value: string | undefined): VueDoctorPreset | undefined =
   if (value === undefined) return undefined;
   if (VALID_PRESETS.has(value as VueDoctorPreset)) return value as VueDoctorPreset;
   throw new Error(`Preset "${value}" is not supported. Use recommended, strict, or design.`);
+};
+
+const resolveHandoffMode = (flags: CliFlags): HandoffMode | undefined => {
+  if (flags.copyPrompt) return "copy";
+  if (flags.printPrompt) return "print";
+  if (flags.handoff === undefined || flags.handoff === false) return undefined;
+  if (flags.handoff === true) return "prompt";
+  const mode = flags.handoff.trim();
+  if (VALID_HANDOFF_MODES.has(mode as HandoffMode)) return mode as HandoffMode;
+  throw new Error(`Handoff mode "${mode}" is not supported. Use prompt, copy, print, codex, claude, cursor, or skip.`);
 };
 
 const resolveOptionalPath = (rootDirectory: string, value: string | undefined): string | undefined =>
@@ -313,8 +354,21 @@ const printVerboseDiagnostics = (diagnostics: Diagnostic[]): void => {
       console.log(`  ${formatSeverity(diagnostic)} ${pc.bold(`vue-doctor/${diagnostic.rule}`)} ${pc.dim(location)}`);
       console.log(`    ${diagnostic.message}`);
       console.log(pc.dim(`    ${diagnostic.help}`));
+      printCodeFrame(diagnostic);
     }
   }
+};
+
+const printCodeFrame = (diagnostic: Diagnostic): void => {
+  try {
+    const lines = readFileSync(diagnostic.filePath, "utf-8").split(/\r?\n/);
+    const sourceLine = lines[diagnostic.line - 1];
+    if (!sourceLine) return;
+    const lineNumber = String(diagnostic.line).padStart(4, " ");
+    const caretOffset = Math.max(0, diagnostic.column - 1);
+    console.log(pc.dim(`    ${lineNumber} | ${sourceLine.trimEnd()}`));
+    console.log(pc.dim(`         | ${" ".repeat(caretOffset)}^`));
+  } catch {}
 };
 
 const printDiagnostics = (diagnostics: Diagnostic[], verbose: boolean): void => {
@@ -368,12 +422,25 @@ const formatFrameworkName = (framework: DiagnoseResult["project"]["framework"]):
   return names[framework];
 };
 
+const formatScanMode = (mode: JsonReportMode): string => {
+  const labels: Record<JsonReportMode, string> = {
+    full: "Full project",
+    diff: "Changed files",
+    staged: "Staged files",
+    "changed-files": "Changed-file list",
+  };
+  return labels[mode];
+};
+
+const formatDisplayScanMode = (mode: JsonReportMode, flags: CliFlags): string => {
+  if (flags.include && flags.include.length > 0) return "Included paths";
+  return formatScanMode(mode);
+};
+
 const printRunHeader = (result: DiagnoseResult): void => {
   const framework = formatFrameworkName(result.project.framework);
-  console.log(`vue-doctor v${VERSION}`);
   console.log("");
-  console.log(`Scanning ${result.project.rootDirectory}...`);
-  console.log("");
+  console.log(`${pc.bold("Project:")} ${result.project.projectName}`);
   console.log(`${pc.green(SYMBOLS.ok)} Detecting framework. Found ${framework}.`);
   console.log(
     `${pc.green(SYMBOLS.ok)} Detecting Vue version. ${
@@ -392,8 +459,6 @@ const printRunHeader = (result: DiagnoseResult): void => {
     console.log(`${pc.green(SYMBOLS.ok)} Detecting Vue Router. Found.`);
   }
   console.log(`${pc.green(SYMBOLS.ok)} Found ${formatSourceFileCount(result.project.sourceFileCount)}.`);
-  console.log("");
-  console.log(`${pc.green(SYMBOLS.ok)} Running Vue checks.`);
 };
 
 const printRunFooter = (
@@ -442,8 +507,82 @@ const getWorstScore = (scans: CompletedScan[]): ScoreResult => {
 const getAllDiagnostics = (scans: CompletedScan[]): Diagnostic[] =>
   scans.flatMap((scan) => scan.result.diagnostics);
 
+type InteractiveScanChoice = "changed" | "staged" | "full";
+
+const hasExplicitScanMode = (
+  flags: CliFlags,
+  configDiff: boolean | string | undefined,
+): boolean =>
+  Boolean(
+    flags.full ||
+    flags.staged ||
+    flags.diff !== undefined ||
+    flags.changedFilesFrom ||
+    configDiff !== undefined ||
+    (flags.include && flags.include.length > 0),
+  );
+
+const applyInteractiveScanMode = async (
+  rootDirectory: string,
+  flags: CliFlags,
+  configDiff: boolean | string | undefined,
+  quiet: boolean,
+): Promise<void> => {
+  if (quiet || flags.yes || !canPrompt() || hasExplicitScanMode(flags, configDiff)) return;
+
+  const choices: Array<{ value: InteractiveScanChoice; label: string; hint?: string }> = [];
+  let defaultValue: InteractiveScanChoice = "full";
+
+  try {
+    const diffInfo = getDiffInfo(rootDirectory);
+    const changedSourceFiles = diffInfo ? filterSourceFiles(diffInfo.changedFiles) : [];
+    if (changedSourceFiles.length > 0) {
+      choices.push({
+        value: "changed",
+        label: "Changed files",
+        hint: `${changedSourceFiles.length} source ${changedSourceFiles.length === 1 ? "file" : "files"}`,
+      });
+      defaultValue = "changed";
+    }
+  } catch {}
+
+  const stagedSourceFiles = getStagedSourceFiles(rootDirectory);
+  if (stagedSourceFiles.length > 0) {
+    choices.push({
+      value: "staged",
+      label: "Staged files",
+      hint: `${stagedSourceFiles.length} source ${stagedSourceFiles.length === 1 ? "file" : "files"}`,
+    });
+    if (defaultValue === "full") defaultValue = "staged";
+  }
+
+  choices.push({
+    value: "full",
+    label: "Full project",
+    hint: "scan every Vue source file",
+  });
+
+  if (choices.length <= 1) return;
+
+  const selected = await promptChoice("What should Vue Doctor scan?", choices, defaultValue);
+  if (selected === "changed") flags.diff = true;
+  if (selected === "staged") flags.staged = true;
+  if (selected === "full") flags.full = true;
+};
+
 const resolveRespectInlineDisables = (flags: CliFlags): boolean | undefined =>
   typeof flags.respectInlineDisables === "boolean" ? flags.respectInlineDisables : undefined;
+
+const resolveParallelWorkers = (flags: CliFlags): number | undefined => {
+  const raw = flags.experimentalParallel ?? process.env.VUE_DOCTOR_PARALLEL ?? process.env.REACT_DOCTOR_PARALLEL;
+  if (raw === undefined || raw === false) return undefined;
+  if (raw === true) return 4;
+  const workers = Number(raw);
+  if (!Number.isInteger(workers) || workers < 1) {
+    throw new Error("Expected --experimental-parallel to be a positive integer worker count.");
+  }
+  return workers;
+};
 
 const parseExplainTarget = (value: string): { file: string; line: number } => {
   const match = value.match(/^(.*):(\d+)$/);
@@ -465,12 +604,14 @@ const runExplain = async (
     config: configOverride,
     includePaths: [target.file],
     respectInlineDisables: resolveRespectInlineDisables(flags),
+    parallelWorkers: resolveParallelWorkers(flags),
   });
   const auditResult = await diagnose(rootDirectory, {
     configPath: flags.config,
     config: configOverride,
     includePaths: [target.file],
     respectInlineDisables: false,
+    parallelWorkers: resolveParallelWorkers(flags),
   });
 
   const isSameDiagnostic = (left: Diagnostic, right: Diagnostic): boolean =>
@@ -540,12 +681,33 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
   }
 
   const quiet = Boolean(flags.json || flags.markdown || flags.sarif || flags.score || flags.annotations);
+  await applyInteractiveScanMode(rootDirectory, flags, loaded.config.diff, quiet);
   const projectDirectories = selectProjectDirectories(rootDirectory, flags.project, Boolean(flags.yes));
   const diffValue = resolveDiffValue(flags, loaded.config.diff);
-  const mode: JsonReportMode = flags.staged ? "staged" : diffValue !== undefined && diffValue !== false ? "diff" : "full";
+  const parallelWorkers = resolveParallelWorkers(flags);
+  const changedFilesFromPath = flags.changedFilesFrom
+    ? path.resolve(rootDirectory, flags.changedFilesFrom)
+    : undefined;
+  const changedFilesFrom = changedFilesFromPath ? readChangedFilesFromFile(changedFilesFromPath) : [];
+  const mode: JsonReportMode = flags.staged
+    ? "staged"
+    : changedFilesFromPath
+      ? "changed-files"
+      : diffValue !== undefined && diffValue !== false
+        ? "diff"
+        : "full";
   const explicitBase = typeof diffValue === "string" ? diffValue : undefined;
   let scans: CompletedScan[] = [];
   let reportDiff: DiffInfo | null = null;
+
+  if (!quiet) {
+    printBrandHeader(VERSION, [
+      ["Project", rootDirectory],
+      ["Mode", formatDisplayScanMode(mode, flags)],
+      ["Workspaces", projectDirectories.length],
+      ["Parallel", parallelWorkers ? `${parallelWorkers} workers` : "off"],
+    ]);
+  }
 
   if (flags.offline && !quiet) {
     console.log(pc.dim("Offline mode enabled. Vue Doctor already scores locally, so no network call is made."));
@@ -561,6 +723,26 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
         continue;
       }
       includePaths = stagedFiles;
+    } else if (changedFilesFromPath) {
+      const projectChangedFiles = filterSourceFiles(
+        filterChangedFilesForProject(rootDirectory, projectDirectory, changedFilesFrom),
+      );
+      if (projectDirectory === projectDirectories[0]) {
+        reportDiff = {
+          currentBranch: "HEAD",
+          baseBranch: changedFilesFromPath,
+          changedFiles: changedFilesFrom,
+        };
+      }
+      if (projectChangedFiles.length === 0) {
+        if (!quiet) console.log(pc.dim(`No changed source files in ${projectDirectory}, skipping.`));
+        continue;
+      }
+      includePaths = projectChangedFiles;
+      if (!quiet) {
+        console.log(`Scanning changed files from ${changedFilesFromPath}.`);
+        console.log("");
+      }
     } else if (mode === "diff") {
       const diffInfo = getDiffInfo(projectDirectory, explicitBase);
       if (projectDirectory === projectDirectories[0]) reportDiff = diffInfo;
@@ -585,13 +767,22 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
       }
     }
 
-    const result = await diagnose(projectDirectory, {
+    const diagnoseOptions = {
       verbose: flags.verbose,
       configPath: flags.config,
       config: configOverride,
       includePaths,
       respectInlineDisables: resolveRespectInlineDisables(flags),
-    });
+      parallelWorkers,
+    };
+    const result = quiet
+      ? await diagnose(projectDirectory, diagnoseOptions)
+      : await runProductStep(
+          "Analyzing Vue source",
+          () => diagnose(projectDirectory, diagnoseOptions),
+          (scanResult) =>
+            `${formatSourceFileCount(scanResult.project.sourceFileCount)}, ${formatIssueCount(scanResult.diagnostics.length)}`,
+        );
     scans.push({ directory: projectDirectory, result });
   }
 
@@ -611,7 +802,7 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
 
   const report = toJsonReportFromScans(rootDirectory, scans, {
     mode,
-    diff: mode === "diff" ? reportDiff : null,
+    diff: mode === "diff" || mode === "changed-files" ? reportDiff : null,
     elapsedMilliseconds: performance.now() - start,
   });
   const diagnostics = getAllDiagnostics(scans);
@@ -661,16 +852,25 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
     }
   }
 
+  if (!quiet && diagnostics.length > 0) {
+    await runAgentHandoff(report, {
+      cwd: rootDirectory,
+      mode: resolveHandoffMode(flags) ?? "prompt",
+    });
+  }
+  if (!quiet) maybePrintSetupHint(rootDirectory);
+
   process.exitCode = shouldFail(diagnostics, failOn) ? 1 : 0;
 };
 
 const runInstall = async (flags: InstallFlags): Promise<void> => {
-  console.log(`vue-doctor v${VERSION}`);
-  console.log("");
-  await runInstallSkill({
+  await runInstallOnboarding({
     yes: flags.yes,
     dryRun: flags.dryRun,
     cwd: flags.cwd,
+    agentHooks: flags.agentHooks,
+    gitHook: flags.gitHook,
+    githubAction: flags.githubAction,
   });
 };
 
@@ -693,8 +893,10 @@ export const runCli = async (argv = process.argv): Promise<void> => {
     .option("--full", "force a full scan and ignore config diff / --diff", false)
     .option("--project <name>", "workspace project(s) to scan; repeat by comma-separating names")
     .option("--diff [base]", "scan files changed vs base branch; pass false to disable")
+    .option("--changed-files-from <path>", "scan source files listed in a newline, NUL, or JSON file")
     .option("--staged", "scan staged git files", false)
     .option("--offline", "accepted for React Doctor parity; Vue Doctor always scores locally", false)
+    .option("--experimental-parallel [workers]", "scan files in worker threads; defaults to 4 workers")
     .option("--fail-on <level>", "exit with error on diagnostics: error, warning, none", DEFAULT_FAIL_ON)
     .option("--preset <name>", "rule preset: recommended, strict, design")
     .option("--baseline <path>", "ignore diagnostics already present in a baseline file")
@@ -703,6 +905,11 @@ export const runCli = async (argv = process.argv): Promise<void> => {
     .option("--include <path>", "file or directory to scan; can be repeated or comma-separated", parseInclude, [])
     .option("--explain <file:line>", "show diagnostics and suppressed diagnostics near a specific location")
     .option("--why <file:line>", "alias for --explain")
+    .option("--handoff [mode]", "handoff diagnostics to an agent: prompt, copy, print, codex, claude, cursor, skip")
+    .option("--copy-prompt", "copy an agent-ready diagnostics prompt to the clipboard", false)
+    .option("--print-prompt", "print an agent-ready diagnostics prompt", false)
+    .option("--color", "force color output")
+    .option("--no-color", "disable color output")
     .option("--respect-inline-disables", "respect inline vue-doctor/eslint/oxlint disable comments")
     .option("--no-respect-inline-disables", "audit mode: ignore inline disable comments")
     .allowExcessArguments(false)
@@ -714,8 +921,20 @@ export const runCli = async (argv = process.argv): Promise<void> => {
     .description("Install the vue-doctor skill into detected coding agents")
     .option("-y, --yes", "skip prompts and install for all detected agents", false)
     .option("--dry-run", "show what would be installed without writing files", false)
+    .option("--agent-hooks", "install native Claude/Cursor edit hooks when project folders exist", false)
+    .option("--no-git-hook", "skip Git pre-commit hook setup")
+    .option("--no-github-action", "skip GitHub Actions workflow setup")
     .option("-c, --cwd <cwd>", "working directory", process.cwd())
     .action(runInstall);
+
+  program
+    .command("version")
+    .description("Print Vue Doctor, Node.js, and platform information")
+    .action(() => {
+      console.log(`vue-doctor ${VERSION}`);
+      console.log(`node ${process.version}`);
+      console.log(`${process.platform} ${process.arch}`);
+    });
 
   process.stdout.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "EPIPE") process.exit(0);

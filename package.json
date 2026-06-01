@@ -1,6 +1,6 @@
 {
   "name": "@rekl0w/vue-doctor",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Diagnose Vue codebases for security, performance, correctness, accessibility, and architecture issues",
   "keywords": [
     "accessibility",
@@ -35,6 +35,7 @@
     "bin/**",
     "dist/**/*.js",
     "dist/**/*.d.ts",
+    "schema/**",
     "skills/**",
     "README.md",
     "LICENSE",
@@ -60,7 +61,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run typecheck && npm run build && npm run test",
+    "build:schema": "node scripts/generate-config-schema.mjs",
+    "check": "npm run build:schema && npm run typecheck && npm run build && npm run test",
     "local:link": "npm run build && npm link",
     "local:pack": "node scripts/pack-local.mjs",
     "prepack": "npm run check"

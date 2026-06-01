@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+- Expanded `vue-doctor install` into full project onboarding: package script, dev dependency install, GitHub Actions workflow, Git pre-commit hook support, bundled agent skill install, dry-run previews, and optional native Claude/Cursor edit hooks.
+- Added an interactive install wizard for choosing package script, dependency, agent skill, Git hook, GitHub Action, and native agent hook setup.
+- Added agent handoff flows for diagnostics, including focused prompt generation, full diagnostics directories, clipboard copy, prompt printing, and best-effort Codex/Claude/Cursor CLI launch modes.
+- Added branded human CLI output, scan progress steps, interactive changed/staged/full scan selection, and once-per-project setup hints in coding-agent environments.
+- Added `--changed-files-from` for CI systems that provide an authoritative changed-file list without relying on local branch checkout state.
+- Added `--experimental-parallel [workers]` for worker-thread scanning on larger Vue repositories.
+- Added lightweight source frames in verbose diagnostic output.
+- Reworked the composite GitHub Action to use pull request file discovery through the GitHub API, sticky PR comments with the built-in token, annotation rendering from JSON, `non-blocking` mode, package `version` selection, and issue-count outputs.
+- Added a `version` subcommand, config JSON schema, and schema generation script.
+
 ## 0.3.0
 
 - Added `--markdown` and `--sarif` report formats, plus Node API helpers for generating Markdown and SARIF from JSON reports.

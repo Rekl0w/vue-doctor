@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { Worker } from "node:worker_threads";
 import { parse } from "@vue/compiler-sfc";
 import { minimatch } from "minimatch";
 import { PLUGIN_NAME, VERSION } from "./constants.js";
@@ -207,7 +208,7 @@ const scanScriptFile = (
   return diagnostics;
 };
 
-const scanFile = (
+export const scanFile = (
   filePath: string,
   rootDirectory: string,
   config: VueDoctorConfig,
@@ -218,6 +219,64 @@ const scanFile = (
     return scanVueFile(filePath, rootDirectory, source, config, project);
   }
   return scanScriptFile(filePath, rootDirectory, source, config, project);
+};
+
+const MAX_PARALLEL_WORKERS = 8;
+
+const normalizeWorkerCount = (requested: number | undefined, fileCount: number): number => {
+  if (!requested || requested <= 1 || fileCount < 2) return 1;
+  return Math.max(1, Math.min(MAX_PARALLEL_WORKERS, fileCount, Math.floor(requested)));
+};
+
+const chunkFiles = (files: string[], workerCount: number): string[][] => {
+  const chunks = Array.from({ length: workerCount }, () => [] as string[]);
+  files.forEach((filePath, index) => {
+    chunks[index % workerCount]!.push(filePath);
+  });
+  return chunks.filter((chunk) => chunk.length > 0);
+};
+
+const scanFileChunkInWorker = (
+  files: string[],
+  rootDirectory: string,
+  config: VueDoctorConfig,
+  project: ProjectInfo,
+): Promise<Diagnostic[]> =>
+  new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./scan-worker.js", import.meta.url), {
+      workerData: {
+        files,
+        rootDirectory,
+        config,
+        project,
+      },
+    });
+    worker.once("message", (message: { diagnostics: Diagnostic[] }) => {
+      resolve(message.diagnostics);
+    });
+    worker.once("error", reject);
+    worker.once("exit", (code) => {
+      if (code !== 0) reject(new Error(`Vue Doctor scan worker exited with code ${code}.`));
+    });
+  });
+
+const scanFiles = async (
+  files: string[],
+  rootDirectory: string,
+  config: VueDoctorConfig,
+  project: ProjectInfo,
+  parallelWorkers?: number,
+): Promise<Diagnostic[]> => {
+  const workerCount = normalizeWorkerCount(parallelWorkers, files.length);
+  if (workerCount <= 1) {
+    return files.flatMap((filePath) => scanFile(filePath, rootDirectory, config, project));
+  }
+
+  const chunks = chunkFiles(files, workerCount);
+  const chunkDiagnostics = await Promise.all(
+    chunks.map((chunk) => scanFileChunkInWorker(chunk, rootDirectory, config, project)),
+  );
+  return chunkDiagnostics.flat();
 };
 
 export const diagnose = async (
@@ -237,7 +296,13 @@ export const diagnose = async (
   const project = discoverProject(rootDirectory);
   const files = discoverSourceFiles(rootDirectory, includePaths, {}, config);
 
-  const diagnostics = files.flatMap((filePath) => scanFile(filePath, rootDirectory, config, project));
+  const diagnostics = await scanFiles(
+    files,
+    rootDirectory,
+    config,
+    project,
+    options.parallelWorkers,
+  );
   const score = calculateScore(diagnostics, { totalSourceFiles: files.length });
 
   return {

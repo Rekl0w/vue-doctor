@@ -15,11 +15,20 @@ inputs:
     description: "Workspace project(s) to scan (comma-separated)"
     required: false
   diff:
-    description: "Base branch for diff mode (e.g. main). Only changed Vue source files are scanned."
+    description: "Base branch for diff mode when not using pull_request changed-file discovery"
     required: false
   annotations:
     description: "Emit GitHub Actions annotations for every diagnostic"
+    default: "true"
+  comment:
+    description: "Update a sticky Vue Doctor PR comment"
+    default: "true"
+  non-blocking:
+    description: "Always pass the workflow even when Vue Doctor finds blocking diagnostics"
     default: "false"
+  experimental-parallel:
+    description: "Optional worker count for experimental parallel scanning"
+    required: false
   json:
     description: "Write a JSON report file"
     default: "false"
@@ -39,7 +48,7 @@ inputs:
     description: "Path for the SARIF report when sarif is true"
     default: "vue-doctor.sarif"
   github-token:
-    description: "GitHub token for posting PR comments. When set on pull_request events, findings are posted as a PR comment."
+    description: "GitHub token for PR file discovery and sticky comments"
     required: false
   preset:
     description: "Rule preset: recommended, strict, or design"
@@ -58,41 +67,69 @@ inputs:
     default: "false"
   node-version:
     description: "Node.js version to use"
-    default: "20"
+    default: "22"
+  version:
+    description: "npm version/range of @rekl0w/vue-doctor to run"
+    default: "latest"
 
 outputs:
   score:
     description: "Health score (0-100)"
-    value: ${{ steps.score.outputs.score }}
+    value: ${{ steps.summary.outputs.score }}
+  total-issues:
+    description: "Total diagnostics count"
+    value: ${{ steps.summary.outputs.total-issues }}
+  error-count:
+    description: "Error diagnostics count"
+    value: ${{ steps.summary.outputs.error-count }}
+  warning-count:
+    description: "Warning diagnostics count"
+    value: ${{ steps.summary.outputs.warning-count }}
+  affected-files:
+    description: "Affected file count"
+    value: ${{ steps.summary.outputs.affected-files }}
   report-path:
     description: "JSON report path when json is true"
-    value: ${{ steps.report.outputs['report-path'] }}
+    value: ${{ steps.report.outputs.report-path }}
   markdown-report-path:
     description: "Markdown report path when markdown is true"
-    value: ${{ steps.markdown-report.outputs['report-path'] }}
+    value: ${{ steps.markdown-report.outputs.report-path }}
   sarif-report-path:
     description: "SARIF report path when sarif is true"
-    value: ${{ steps.sarif-report.outputs['report-path'] }}
+    value: ${{ steps.sarif-report.outputs.report-path }}
 
 runs:
   using: "composite"
   steps:
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v5
       with:
         node-version: ${{ inputs.node-version }}
+        package-manager-cache: false
 
-    - if: ${{ inputs.diff != '' && github.event_name == 'pull_request' }}
+    - id: pr-files
+      if: ${{ github.event_name == 'pull_request' }}
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token || github.token }}
+        script: |
+          const fs = require("fs");
+          const path = require("path");
+          const outputPath = path.join(process.env.RUNNER_TEMP, "vue-doctor-changed-files.txt");
+          try {
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            fs.writeFileSync(outputPath, files.map((file) => file.filename).join("\n"));
+            core.setOutput("path", outputPath);
+            core.info(`Vue Doctor will scan ${files.length} pull request file(s).`);
+          } catch (error) {
+            core.warning(`Could not list pull request files; Vue Doctor will fall back to diff/full scan. ${error.message}`);
+          }
+
+    - id: scan
       shell: bash
-      env:
-        DIFF_BASE: ${{ inputs.diff }}
-        HEAD_REF: ${{ github.head_ref }}
-      run: |
-        case "$DIFF_BASE" in -* ) echo "::error::diff input cannot start with -"; exit 1 ;; esac
-        case "$HEAD_REF" in -* ) echo "::error::head_ref cannot start with -"; exit 1 ;; esac
-        git fetch origin "$DIFF_BASE" && git branch -f "$DIFF_BASE" FETCH_HEAD 2>/dev/null || true
-        git checkout "$HEAD_REF" 2>/dev/null || true
-
-    - shell: bash
       env:
         INPUT_DIRECTORY: ${{ inputs.directory }}
         INPUT_VERBOSE: ${{ inputs.verbose }}
@@ -103,74 +140,64 @@ runs:
         INPUT_UPDATE_BASELINE: ${{ inputs.update-baseline }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_OFFLINE: ${{ inputs.offline }}
-        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
-        RUNNER_TEMP: ${{ runner.temp }}
-        GITHUB_RUN_ID: ${{ github.run_id }}
+        INPUT_EXPERIMENTAL_PARALLEL: ${{ inputs.experimental-parallel }}
+        INPUT_VERSION: ${{ inputs.version }}
+        CHANGED_FILES_PATH: ${{ steps.pr-files.outputs.path }}
       run: |
-        set -o pipefail
-        FLAGS=("--fail-on" "$INPUT_FAIL_ON")
+        set +e
+        FLAGS=("--json" "--json-compact" "--fail-on" "$INPUT_FAIL_ON")
         if [ "$INPUT_VERBOSE" = "true" ]; then FLAGS+=("--verbose"); fi
         if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
-        if [ -n "$INPUT_DIFF" ]; then FLAGS+=("--diff" "$INPUT_DIFF"); fi
         if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
         if [ -n "$INPUT_BASELINE" ]; then FLAGS+=("--baseline" "$INPUT_BASELINE"); fi
         if [ -n "$INPUT_UPDATE_BASELINE" ]; then FLAGS+=("--update-baseline" "$INPUT_UPDATE_BASELINE"); fi
         if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
-
-        OUTPUT_FILE="${RUNNER_TEMP:-/tmp}/vue-doctor-output-${GITHUB_RUN_ID:-$$}.txt"
-        echo "VUE_DOCTOR_OUTPUT_FILE=$OUTPUT_FILE" >> "$GITHUB_ENV"
-
-        STATUS=0
-        if [ -n "$INPUT_GITHUB_TOKEN" ]; then
-          npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" "${FLAGS[@]}" | tee "$OUTPUT_FILE" || STATUS=$?
-
-          PR_REPORT_FILE="${RUNNER_TEMP:-/tmp}/vue-doctor-pr-report-${GITHUB_RUN_ID:-$$}.json"
-          echo "VUE_DOCTOR_PR_REPORT_FILE=$PR_REPORT_FILE" >> "$GITHUB_ENV"
-          npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" --json --fail-on none "${FLAGS[@]:2}" > "$PR_REPORT_FILE" || rm -f "$PR_REPORT_FILE"
-        else
-          npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" "${FLAGS[@]}" || STATUS=$?
+        if [ -n "$INPUT_EXPERIMENTAL_PARALLEL" ]; then FLAGS+=("--experimental-parallel" "$INPUT_EXPERIMENTAL_PARALLEL"); fi
+        if [ -n "$CHANGED_FILES_PATH" ] && [ -s "$CHANGED_FILES_PATH" ]; then
+          FLAGS+=("--changed-files-from" "$CHANGED_FILES_PATH")
+        elif [ -n "$INPUT_DIFF" ]; then
+          FLAGS+=("--diff" "$INPUT_DIFF")
         fi
 
-        exit "$STATUS"
+        REPORT_FILE="${RUNNER_TEMP:-/tmp}/vue-doctor-report-${GITHUB_RUN_ID:-$$}.json"
+        PACKAGE_SPEC="@rekl0w/vue-doctor@${INPUT_VERSION:-latest}"
+        NO_COLOR=1 npm exec --yes --package "$PACKAGE_SPEC" -- vue-doctor "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$REPORT_FILE"
+        STATUS=$?
 
-    - if: ${{ always() && inputs.annotations == 'true' }}
+        node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))" "$REPORT_FILE"
+        PARSE_STATUS=$?
+        if [ "$PARSE_STATUS" -ne 0 ]; then STATUS=$PARSE_STATUS; fi
+
+        echo "report-file=$REPORT_FILE" >> "$GITHUB_OUTPUT"
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        exit 0
+
+    - id: summary
+      if: always()
       shell: bash
       env:
-        INPUT_DIRECTORY: ${{ inputs.directory }}
-        INPUT_PROJECT: ${{ inputs.project }}
-        INPUT_DIFF: ${{ inputs.diff }}
-        INPUT_PRESET: ${{ inputs.preset }}
-        INPUT_BASELINE: ${{ inputs.baseline }}
-        INPUT_OFFLINE: ${{ inputs.offline }}
+        REPORT_FILE: ${{ steps.scan.outputs.report-file }}
+        COMMENT_FILE: ${{ runner.temp }}/vue-doctor-comment.md
       run: |
-        FLAGS=("--annotations" "--fail-on" "none")
-        if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
-        if [ -n "$INPUT_DIFF" ]; then FLAGS+=("--diff" "$INPUT_DIFF"); fi
-        if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
-        if [ -n "$INPUT_BASELINE" ]; then FLAGS+=("--baseline" "$INPUT_BASELINE"); fi
-        if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
-        npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" "${FLAGS[@]}"
+        node "$GITHUB_ACTION_PATH/scripts/render-github-action-comment.mjs" "$REPORT_FILE" "$COMMENT_FILE"
+        echo "comment-file=$COMMENT_FILE" >> "$GITHUB_OUTPUT"
+
+    - if: ${{ always() && inputs.annotations == 'true' && steps.scan.outputs.report-file != '' }}
+      shell: bash
+      env:
+        REPORT_FILE: ${{ steps.scan.outputs.report-file }}
+      run: |
+        node "$GITHUB_ACTION_PATH/scripts/render-github-annotations.mjs" "$REPORT_FILE"
 
     - id: report
-      if: ${{ always() && inputs.json == 'true' }}
+      if: ${{ always() && inputs.json == 'true' && steps.scan.outputs.report-file != '' }}
       shell: bash
       env:
-        INPUT_DIRECTORY: ${{ inputs.directory }}
         INPUT_REPORT_PATH: ${{ inputs.report-path }}
-        INPUT_PROJECT: ${{ inputs.project }}
-        INPUT_DIFF: ${{ inputs.diff }}
-        INPUT_PRESET: ${{ inputs.preset }}
-        INPUT_BASELINE: ${{ inputs.baseline }}
-        INPUT_OFFLINE: ${{ inputs.offline }}
+        REPORT_FILE: ${{ steps.scan.outputs.report-file }}
       run: |
         mkdir -p "$(dirname "$INPUT_REPORT_PATH")"
-        FLAGS=("--json" "--fail-on" "none")
-        if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
-        if [ -n "$INPUT_DIFF" ]; then FLAGS+=("--diff" "$INPUT_DIFF"); fi
-        if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
-        if [ -n "$INPUT_BASELINE" ]; then FLAGS+=("--baseline" "$INPUT_BASELINE"); fi
-        if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
-        npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$INPUT_REPORT_PATH"
+        cp "$REPORT_FILE" "$INPUT_REPORT_PATH"
         echo "report-path=$INPUT_REPORT_PATH" >> "$GITHUB_OUTPUT"
 
     - id: markdown-report
@@ -180,19 +207,22 @@ runs:
         INPUT_DIRECTORY: ${{ inputs.directory }}
         INPUT_REPORT_PATH: ${{ inputs.markdown-report-path }}
         INPUT_PROJECT: ${{ inputs.project }}
-        INPUT_DIFF: ${{ inputs.diff }}
         INPUT_PRESET: ${{ inputs.preset }}
         INPUT_BASELINE: ${{ inputs.baseline }}
         INPUT_OFFLINE: ${{ inputs.offline }}
+        INPUT_EXPERIMENTAL_PARALLEL: ${{ inputs.experimental-parallel }}
+        INPUT_VERSION: ${{ inputs.version }}
+        CHANGED_FILES_PATH: ${{ steps.pr-files.outputs.path }}
       run: |
         mkdir -p "$(dirname "$INPUT_REPORT_PATH")"
         FLAGS=("--markdown" "--fail-on" "none")
         if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
-        if [ -n "$INPUT_DIFF" ]; then FLAGS+=("--diff" "$INPUT_DIFF"); fi
         if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
         if [ -n "$INPUT_BASELINE" ]; then FLAGS+=("--baseline" "$INPUT_BASELINE"); fi
         if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
-        npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$INPUT_REPORT_PATH"
+        if [ -n "$INPUT_EXPERIMENTAL_PARALLEL" ]; then FLAGS+=("--experimental-parallel" "$INPUT_EXPERIMENTAL_PARALLEL"); fi
+        if [ -n "$CHANGED_FILES_PATH" ] && [ -s "$CHANGED_FILES_PATH" ]; then FLAGS+=("--changed-files-from" "$CHANGED_FILES_PATH"); fi
+        npm exec --yes --package "@rekl0w/vue-doctor@${INPUT_VERSION:-latest}" -- vue-doctor "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$INPUT_REPORT_PATH"
         echo "report-path=$INPUT_REPORT_PATH" >> "$GITHUB_OUTPUT"
 
     - id: sarif-report
@@ -202,200 +232,53 @@ runs:
         INPUT_DIRECTORY: ${{ inputs.directory }}
         INPUT_REPORT_PATH: ${{ inputs.sarif-report-path }}
         INPUT_PROJECT: ${{ inputs.project }}
-        INPUT_DIFF: ${{ inputs.diff }}
         INPUT_PRESET: ${{ inputs.preset }}
         INPUT_BASELINE: ${{ inputs.baseline }}
         INPUT_OFFLINE: ${{ inputs.offline }}
+        INPUT_EXPERIMENTAL_PARALLEL: ${{ inputs.experimental-parallel }}
+        INPUT_VERSION: ${{ inputs.version }}
+        CHANGED_FILES_PATH: ${{ steps.pr-files.outputs.path }}
       run: |
         mkdir -p "$(dirname "$INPUT_REPORT_PATH")"
-        FLAGS=("--sarif" "--fail-on" "none")
+        FLAGS=("--sarif" "--json-compact" "--fail-on" "none")
         if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
-        if [ -n "$INPUT_DIFF" ]; then FLAGS+=("--diff" "$INPUT_DIFF"); fi
         if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
         if [ -n "$INPUT_BASELINE" ]; then FLAGS+=("--baseline" "$INPUT_BASELINE"); fi
         if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
-        npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$INPUT_REPORT_PATH"
+        if [ -n "$INPUT_EXPERIMENTAL_PARALLEL" ]; then FLAGS+=("--experimental-parallel" "$INPUT_EXPERIMENTAL_PARALLEL"); fi
+        if [ -n "$CHANGED_FILES_PATH" ] && [ -s "$CHANGED_FILES_PATH" ]; then FLAGS+=("--changed-files-from" "$CHANGED_FILES_PATH"); fi
+        npm exec --yes --package "@rekl0w/vue-doctor@${INPUT_VERSION:-latest}" -- vue-doctor "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$INPUT_REPORT_PATH"
         echo "report-path=$INPUT_REPORT_PATH" >> "$GITHUB_OUTPUT"
 
-    - id: score
-      if: always()
-      shell: bash
-      env:
-        INPUT_DIRECTORY: ${{ inputs.directory }}
-        INPUT_PROJECT: ${{ inputs.project }}
-        INPUT_DIFF: ${{ inputs.diff }}
-        INPUT_PRESET: ${{ inputs.preset }}
-        INPUT_BASELINE: ${{ inputs.baseline }}
-        INPUT_OFFLINE: ${{ inputs.offline }}
-      run: |
-        SCORE_ARGS=("$INPUT_DIRECTORY" "--score" "--fail-on" "none")
-        if [ -n "$INPUT_PROJECT" ]; then SCORE_ARGS+=("--project" "$INPUT_PROJECT"); fi
-        if [ -n "$INPUT_DIFF" ]; then SCORE_ARGS+=("--diff" "$INPUT_DIFF"); fi
-        if [ -n "$INPUT_PRESET" ]; then SCORE_ARGS+=("--preset" "$INPUT_PRESET"); fi
-        if [ -n "$INPUT_BASELINE" ]; then SCORE_ARGS+=("--baseline" "$INPUT_BASELINE"); fi
-        if [ "$INPUT_OFFLINE" = "true" ]; then SCORE_ARGS+=("--offline"); fi
-        SCORE=$(npx -y @rekl0w/vue-doctor@0.3.0 "${SCORE_ARGS[@]}" 2>/dev/null | tail -1 | tr -d '[:space:]') || true
-        if [[ -n "$SCORE" && "$SCORE" =~ ^[0-9]+$ ]]; then
-          echo "score=$SCORE" >> "$GITHUB_OUTPUT"
-        fi
-
-    - if: ${{ always() && inputs.github-token != '' && github.event_name == 'pull_request' }}
+    - if: ${{ always() && inputs.comment == 'true' && github.event_name == 'pull_request' && steps.summary.outputs.comment-file != '' }}
       uses: actions/github-script@v7
       env:
-        VUE_DOCTOR_OUTPUT_FILE: ${{ env.VUE_DOCTOR_OUTPUT_FILE }}
-        VUE_DOCTOR_PR_REPORT_FILE: ${{ env.VUE_DOCTOR_PR_REPORT_FILE }}
-        VUE_DOCTOR_SCORE: ${{ steps.score.outputs.score }}
-        INPUT_VERBOSE: ${{ inputs.verbose }}
+        COMMENT_FILE: ${{ steps.summary.outputs.comment-file }}
       with:
-        github-token: ${{ inputs.github-token }}
+        github-token: ${{ inputs.github-token || github.token }}
         script: |
           const fs = require("fs");
-          const marker = "<!-- vue-doctor -->";
-
-          const stripAnsi = (value) =>
-            String(value ?? "").replace(/[\u001B\u009B][[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, "");
-
-          const markdownText = (value) =>
-            String(value ?? "")
-              .replace(/&/g, "&amp;")
-              .replace(/</g, "&lt;")
-              .replace(/>/g, "&gt;");
-
-          const tableText = (value) =>
-            markdownText(value)
-              .replace(/\r?\n/g, " ")
-              .replace(/\|/g, "\\|");
-
-          const inlineCode = (value) => {
-            const text = String(value ?? "").replace(/\r?\n/g, " ");
-            const longestTickRun = Math.max(0, ...Array.from(text.matchAll(/`+/g), (match) => match[0].length));
-            const fence = "`".repeat(longestTickRun + 1);
-            return `${fence}${text}${fence}`;
-          };
-
-          const readJson = (path) => {
-            if (!path || !fs.existsSync(path)) return null;
-            try {
-              return JSON.parse(fs.readFileSync(path, "utf8"));
-            } catch {
-              return null;
-            }
-          };
-
-          const readOutput = (path) => {
-            if (!path || !fs.existsSync(path)) return "";
-            return stripAnsi(fs.readFileSync(path, "utf8")).trim();
-          };
-
-          const locationFor = (diagnostic) =>
-            `${diagnostic.relativePath ?? diagnostic.filePath ?? "unknown"}:${diagnostic.line ?? 1}:${diagnostic.column ?? 1}`;
-
-          const renderReport = (report) => {
-            const summary = report.summary ?? {};
-            const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics.slice() : [];
-            const sourceFileCount = report.project?.sourceFileCount ?? "?";
-            const affectedFileCount = summary.affectedFileCount ?? 0;
-            const totalDiagnosticCount = summary.totalDiagnosticCount ?? diagnostics.length;
-            const fallbackScore = process.env.VUE_DOCTOR_SCORE;
-            const score = Number.isInteger(summary.score)
-              ? summary.score
-              : fallbackScore && /^[0-9]+$/.test(fallbackScore)
-                ? Number(fallbackScore)
-                : null;
-            const scoreLabel = summary.scoreLabel ? ` (${summary.scoreLabel})` : "";
-            const scoreLine = score === null ? "" : `**Score:** ${inlineCode(`${score}`)} / 100${scoreLabel}\n\n`;
-            const status = totalDiagnosticCount === 0 ? "No diagnostics" : "Diagnostics found";
-            const displayLimit = process.env.INPUT_VERBOSE === "true" ? 100 : 25;
-            const visibleDiagnostics = diagnostics.slice(0, displayLimit);
-            const hiddenCount = Math.max(0, diagnostics.length - visibleDiagnostics.length);
-            const lines = [
-              marker,
-              "## Vue Doctor",
-              "",
-              scoreLine.trimEnd(),
-              "",
-              "| Status | Files | Diagnostics | Errors | Warnings |",
-              "| --- | ---: | ---: | ---: | ---: |",
-              `| ${tableText(status)} | ${affectedFileCount} / ${sourceFileCount} | ${totalDiagnosticCount} | ${summary.errorCount ?? 0} | ${summary.warningCount ?? 0} |`,
-              "",
-            ];
-
-            if (diagnostics.length === 0) {
-              lines.push("No Vue Doctor diagnostics found.");
-              return lines.join("\n").replace(/\n{3,}/g, "\n\n");
-            }
-
-            if (hiddenCount > 0) {
-              lines.push(`Showing ${visibleDiagnostics.length} of ${diagnostics.length} diagnostics. Use the workflow logs or enable the JSON report artifact for the full report.`, "");
-            }
-
-            const groups = new Map();
-            for (const diagnostic of visibleDiagnostics) {
-              const category = diagnostic.category ?? "Other";
-              const group = groups.get(category) ?? [];
-              group.push(diagnostic);
-              groups.set(category, group);
-            }
-
-            let groupIndex = 0;
-            for (const [category, items] of groups) {
-              lines.push(`<details${groupIndex === 0 ? " open" : ""}>`);
-              lines.push(`<summary>${markdownText(category)} (${items.length})</summary>`, "");
-              for (const diagnostic of items) {
-                const ruleName = `${diagnostic.plugin ?? "vue-doctor"}/${diagnostic.rule ?? "unknown-rule"}`;
-                lines.push(
-                  `- **${markdownText(diagnostic.severity ?? "warning")}** ${inlineCode(ruleName)} at ${inlineCode(locationFor(diagnostic))}`,
-                  `  ${markdownText(diagnostic.message ?? "")}`,
-                );
-                if (diagnostic.help) {
-                  lines.push(`  ${markdownText(diagnostic.help)}`);
-                }
-              }
-              lines.push("", "</details>", "");
-              groupIndex += 1;
-            }
-
-            return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-          };
-
-          const renderFallback = (output) => {
-            if (!output) return "";
-            const score = process.env.VUE_DOCTOR_SCORE;
-            const scoreLine =
-              score && /^[0-9]+$/.test(score)
-                ? `**Score:** ${inlineCode(score)} / 100\n\n`
-                : "";
-            const truncatedOutput =
-              output.length > 50000
-                ? `${output.slice(0, 50000)}\n\n[Output truncated. Use the workflow logs for the full report.]`
-                : output;
-            return `${marker}\n## Vue Doctor\n\n${scoreLine}\`\`\`text\n${truncatedOutput}\n\`\`\``;
-          };
-
-          const report = readJson(process.env.VUE_DOCTOR_PR_REPORT_FILE);
-          const output = readOutput(process.env.VUE_DOCTOR_OUTPUT_FILE);
-          let body = report ? renderReport(report) : renderFallback(output);
-          if (!body) return;
-
-          if (body.length > 60000) {
-            body = `${body.slice(0, 59000)}\n\n[Comment truncated. Use the workflow logs or JSON report artifact for the full report.]`;
-          }
-
-          const { data: comments } = await github.rest.issues.listComments({
+          const marker = "<!-- vue-doctor:summary -->";
+          if (!process.env.COMMENT_FILE || !fs.existsSync(process.env.COMMENT_FILE)) return;
+          const body = fs.readFileSync(process.env.COMMENT_FILE, "utf8");
+          if (!body.trim()) return;
+          const comments = await github.paginate(github.rest.issues.listComments, {
             ...context.repo,
             issue_number: context.issue.number,
+            per_page: 100,
           });
           const prev = comments.find((comment) => comment.body?.startsWith(marker));
           if (prev) {
-            await github.rest.issues.updateComment({
-              ...context.repo,
-              comment_id: prev.id,
-              body,
-            });
+            await github.rest.issues.updateComment({ ...context.repo, comment_id: prev.id, body });
           } else {
-            await github.rest.issues.createComment({
-              ...context.repo,
-              issue_number: context.issue.number,
-              body,
-            });
+            await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
           }
+
+    - if: ${{ always() && inputs.non-blocking == 'true' && steps.scan.outputs.status != '0' }}
+      shell: bash
+      run: |
+        echo "::notice::Vue Doctor found blocking diagnostics, but non-blocking mode is enabled."
+
+    - if: ${{ always() && inputs.non-blocking != 'true' && steps.scan.outputs.status != '0' }}
+      shell: bash
+      run: exit "${{ steps.scan.outputs.status }}"

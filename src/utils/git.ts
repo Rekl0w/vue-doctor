@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import { SOURCE_EXTENSIONS } from "../constants.js";
 import type { DiffInfo } from "../types.js";
 
@@ -116,3 +117,35 @@ export const getDiffInfo = (directory: string, explicitBaseRef?: string): DiffIn
 
 export const filterSourceFiles = (filePaths: string[]): string[] =>
   filePaths.filter((filePath) => SOURCE_EXTENSIONS.has(filePath.slice(filePath.lastIndexOf("."))));
+
+const changedFileFromObject = (value: unknown): string | null => {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  for (const key of ["filename", "path", "file", "relativePath"]) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim().length > 0) return candidate.trim();
+  }
+  return null;
+};
+
+const parseChangedFiles = (raw: string): string[] => {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("[")) {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((entry) => (typeof entry === "string" ? entry.trim() : changedFileFromObject(entry)))
+        .filter((entry): entry is string => Boolean(entry));
+    }
+  }
+
+  return raw
+    .split(/\0|\r?\n/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+};
+
+export const readChangedFilesFromFile = (filePath: string): string[] => {
+  const raw = fs.readFileSync(filePath, "utf-8");
+  return parseChangedFiles(raw);
+};

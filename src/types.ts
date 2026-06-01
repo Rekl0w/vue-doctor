@@ -98,6 +98,7 @@ export interface DiagnoseOptions {
   config?: VueDoctorConfig | null | undefined;
   configPath?: string | undefined;
   respectInlineDisables?: boolean | undefined;
+  parallelWorkers?: number | undefined;
 }
 
 export interface DiagnoseResult {
@@ -107,7 +108,7 @@ export interface DiagnoseResult {
   elapsedMilliseconds: number;
 }
 
-export type JsonReportMode = "full" | "diff" | "staged";
+export type JsonReportMode = "full" | "diff" | "staged" | "changed-files";
 
 export interface DiffInfo {
   currentBranch: string;
