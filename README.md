@@ -40,7 +40,7 @@ The CLI prints a score:
 - 50 to 74: Needs work
 - 0 to 49: Critical
 
-Default output is compact and product-focused: Vue Doctor prints a branded run header, shows scan progress, groups diagnostics by category and rule, shows the most important examples, animates the score bar at the bottom in interactive terminals, and writes the full JSON report to a temp file. Use `--verbose` when you want every file-level diagnostic with a source frame in the terminal.
+Default output is compact and product-focused: Vue Doctor prints a lean run header, shows scan progress, summarizes diagnostics by category, animates the score bar at the bottom in interactive terminals, and writes the full JSON report to a temp file. Use `--verbose` when you want every rule and file-level diagnostic with a source frame in the terminal.
 
 ## What It Checks
 

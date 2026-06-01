@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.2
+
+- Refined the default human CLI output to use a lean scan header, one-line project stack summary, and React Doctor-style category-only diagnostics.
+- Slowed the interactive score animation slightly and kept rule messages, file locations, and source frames in `--verbose` output.
+
 ## 0.4.1
 
 - Fixed non-Vue repositories being reported as a perfect 100 health score by adding a `vue-project-not-found` diagnostic when no Vue dependency, Vue framework, or `.vue` source files are detected.

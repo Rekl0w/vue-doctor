@@ -40,7 +40,7 @@ afterEach(() => {
 describe("CLI smoke", () => {
   it("prints detailed version information", () => {
     const output = runCli(["version"]);
-    expect(output).toContain("vue-doctor 0.4.1");
+    expect(output).toContain("vue-doctor 0.4.2");
     expect(output).toContain("node ");
   });
 
@@ -64,13 +64,13 @@ describe("CLI smoke", () => {
     expect(sarif.runs[0]?.results[0]?.ruleId).toBe("vue-doctor/require-img-alt");
   });
 
-  it("prints a branded human report with source frames", () => {
+  it("prints a lean human report with verbose source frames", () => {
     const root = makeProject();
     const output = runCli([root, "--verbose", "--fail-on", "none", "--handoff", "skip"]);
 
-    expect(output).toContain("Vue Doctor");
-    expect(output).toContain("Vue-native diagnostics for agents, reviews, and CI.");
-    expect(output).toContain("Analyzing Vue source");
+    expect(output).toContain("vue-doctor v0.4.2");
+    expect(output).toContain("Full project - 1 workspace - single-threaded");
+    expect(output).toContain("Analyzing Vue source...");
     expect(output).toContain("require-img-alt");
     expect(output).toContain("| <template><img src=\"/logo.png\"></template>");
   });
@@ -88,7 +88,7 @@ describe("CLI smoke", () => {
     const output = runCli([root, "--fail-on", "none", "--handoff", "skip"]);
 
     expect(output).toContain("Vue project was not detected");
-    expect(output).toContain("Vue project not found");
+    expect(output).toContain("Correctness -> 1 error");
     expect(output).not.toContain("100 / 100");
   });
 

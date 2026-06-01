@@ -30,7 +30,7 @@ import { toRelativePath } from "./utils/path.js";
 import { runInstallOnboarding } from "./utils/install-onboarding.js";
 import { runAgentHandoff, type HandoffMode } from "./utils/agent-handoff.js";
 import { maybePrintSetupHint } from "./utils/setup-hint.js";
-import { canPrompt, printBrandHeader, promptChoice, runProductStep } from "./utils/terminal.js";
+import { canPrompt, promptChoice, runProductStep } from "./utils/terminal.js";
 import { selectProjectDirectories } from "./utils/workspaces.js";
 import { calculateScore } from "./utils/scoring.js";
 import { filterDiagnosticsByBaseline, readBaselineKeys, writeBaseline } from "./utils/baseline.js";
@@ -84,11 +84,10 @@ interface CompletedScan {
 const VALID_FAIL_ON_LEVELS = new Set<FailOnLevel>(["error", "warning", "none"]);
 const VALID_PRESETS = new Set<VueDoctorPreset>(["recommended", "strict", "design"]);
 const VALID_HANDOFF_MODES = new Set<HandoffMode>(["prompt", "copy", "print", "codex", "claude", "cursor", "skip"]);
-const MAX_RULES_PER_CATEGORY = 3;
 const SCORE_BAR_WIDTH = 44;
-const SCORE_ANIMATION_FRAMES = 32;
-const SCORE_ANIMATION_DELAY_MS = 22;
-const DIAGNOSTIC_ANIMATION_BUDGET_MS = 900;
+const SCORE_ANIMATION_FRAMES = 40;
+const SCORE_ANIMATION_DELAY_MS = 32;
+const DIAGNOSTIC_ANIMATION_BUDGET_MS = 1200;
 const SYMBOLS = {
   ok: "OK",
   error: "x",
@@ -225,85 +224,13 @@ const groupDiagnostics = (diagnostics: Diagnostic[]): Map<string, Diagnostic[]> 
   return grouped;
 };
 
-const groupByRule = (diagnostics: Diagnostic[]): Map<string, Diagnostic[]> => {
-  const grouped = new Map<string, Diagnostic[]>();
-  for (const diagnostic of diagnostics) {
-    const list = grouped.get(diagnostic.rule) ?? [];
-    list.push(diagnostic);
-    grouped.set(diagnostic.rule, list);
-  }
-  return grouped;
-};
-
 const formatSeverity = (diagnostic: Diagnostic): string =>
   diagnostic.severity === "error" ? pc.red("error") : pc.yellow("warn");
-
-const formatCompactSeverity = (diagnostics: Diagnostic[]): string =>
-  diagnostics.some((diagnostic) => diagnostic.severity === "error")
-    ? pc.red(SYMBOLS.error)
-    : pc.yellow(SYMBOLS.warning);
 
 const formatIssueCount = (count: number): string => `${count} ${count === 1 ? "issue" : "issues"}`;
 
 const formatSourceFileCount = (count: number): string =>
   `${count} source ${count === 1 ? "file" : "files"}`;
-
-const RULE_TITLES: Record<string, string> = {
-  "no-v-html": "v-html",
-  "no-target-blank-without-rel": "Target blank without rel",
-  "no-eval": "Dynamic code execution",
-  "no-hardcoded-secret": "Hardcoded secret",
-  "no-public-runtime-secret": "Public runtime secret",
-  "require-v-for-key": "Missing v-for key",
-  "no-index-key": "Index key",
-  "no-v-if-with-v-for": "v-if with v-for",
-  "no-template-side-effects": "Template side effect",
-  "no-mutating-props": "Mutating props",
-  "no-vue2-deprecated-api": "Vue 2 deprecated API",
-  "no-ssr-browser-global": "SSR browser global",
-  "no-hydration-unstable-template": "Hydration-unstable template",
-  "no-expensive-template-expression": "Expensive template expression",
-  "no-deep-watch": "Deep watch",
-  "watch-requires-cleanup": "Watcher needs cleanup",
-  "no-transition-all": "Transition all",
-  "no-permanent-will-change": "Permanent will-change",
-  "require-img-alt": "Image alt",
-  "require-button-name": "Button accessible name",
-  "no-autofocus": "Autofocus",
-  "no-disabled-zoom": "Disabled zoom",
-  "no-large-component": "Large component",
-  "no-too-many-props": "Too many props",
-  "prefer-scoped-style": "Scoped style",
-  "no-full-lodash-import": "Full lodash import",
-  "no-moment": "Moment import",
-  "prefer-dynamic-import": "Heavy static import",
-  "no-outline-none": "Removed focus outline",
-  "no-tiny-text": "Tiny text",
-  "no-wide-letter-spacing": "Letter spacing",
-  "no-z-index-9999": "Magic z-index",
-  "no-pure-black-background": "Pure black background",
-  "no-gradient-text": "Gradient text",
-  "vue-project-not-found": "Vue project not found",
-};
-
-const toRuleTitle = (ruleName: string): string => {
-  const knownTitle = RULE_TITLES[ruleName];
-  if (knownTitle) return knownTitle;
-
-  const readable = ruleName
-    .replace(/^(no|prefer|require)-/, "")
-    .replaceAll("-", " ");
-  return readable.charAt(0).toUpperCase() + readable.slice(1);
-};
-
-const sortDiagnosticsByImportance = (diagnostics: Diagnostic[]): Diagnostic[] =>
-  [...diagnostics].sort((left, right) => {
-    const severityDelta =
-      (left.severity === "error" ? 0 : 1) - (right.severity === "error" ? 0 : 1);
-    if (severityDelta !== 0) return severityDelta;
-    if (left.relativePath !== right.relativePath) return left.relativePath.localeCompare(right.relativePath);
-    return left.line - right.line;
-  });
 
 const sortGroupsByImportance = (groups: Array<[string, Diagnostic[]]>): Array<[string, Diagnostic[]]> =>
   [...groups].sort(([, leftDiagnostics], [, rightDiagnostics]) => {
@@ -313,42 +240,6 @@ const sortGroupsByImportance = (groups: Array<[string, Diagnostic[]]>): Array<[s
     if (leftDiagnostics.length !== rightDiagnostics.length) return rightDiagnostics.length - leftDiagnostics.length;
     return leftDiagnostics[0]!.rule.localeCompare(rightDiagnostics[0]!.rule);
   });
-
-const wrapText = (text: string, indent: string, width = 88): string[] => {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let current = "";
-
-  for (const word of words) {
-    const next = current.length === 0 ? word : `${current} ${word}`;
-    if (indent.length + next.length > width && current.length > 0) {
-      lines.push(`${indent}${current}`);
-      current = word;
-      continue;
-    }
-    current = next;
-  }
-
-  if (current.length > 0) lines.push(`${indent}${current}`);
-  return lines.length > 0 ? lines : [indent];
-};
-
-const buildCompactRuleGroupLines = (rule: string, diagnostics: Diagnostic[]): string[] => {
-  const sorted = sortDiagnosticsByImportance(diagnostics);
-  const first = sorted[0]!;
-  const countBadge = diagnostics.length > 1 ? ` x${diagnostics.length}` : "";
-  const location = `${first.relativePath}:${first.line}`;
-  const lines = [
-    `  ${formatCompactSeverity(diagnostics)} ${pc.bold(toRuleTitle(rule))}${pc.dim(countBadge)}`,
-    ...wrapText(first.message, "    ").map((line) => pc.dim(line)),
-  ];
-
-  if (first.help) {
-    lines.push(...wrapText(first.help, "    ").map((line) => pc.dim(line)));
-  }
-  lines.push(pc.dim(`    ${location}`));
-  return lines;
-};
 
 const formatCategoryIssueSummary = (diagnostics: Diagnostic[]): string => {
   const errorCount = diagnostics.filter((diagnostic) => diagnostic.severity === "error").length;
@@ -361,32 +252,18 @@ const formatCategoryIssueSummary = (diagnostics: Diagnostic[]): string => {
   return parts.length > 0 ? parts.join(pc.dim(", ")) : pc.dim(formatIssueCount(diagnostics.length));
 };
 
-const buildCompactDiagnosticsLines = (
-  diagnostics: Diagnostic[],
-): { lines: string[]; hiddenCount: number } => {
+const buildCompactDiagnosticsLines = (diagnostics: Diagnostic[]): string[] => {
   if (diagnostics.length === 0) {
-    return { lines: [pc.green("No Vue Doctor diagnostics found.")], hiddenCount: 0 };
+    return [pc.green("No Vue Doctor diagnostics found.")];
   }
 
-  let hiddenCount = 0;
   const lines: string[] = [];
   const categoryGroups = sortGroupsByImportance([...groupDiagnostics(diagnostics).entries()]);
   for (const [category, categoryDiagnostics] of categoryGroups) {
-    lines.push("");
     lines.push(`${pc.bold(category)} ${pc.dim(SYMBOLS.arrow)} ${formatCategoryIssueSummary(categoryDiagnostics)}`);
-
-    const ruleGroups = sortGroupsByImportance([...groupByRule(categoryDiagnostics).entries()]);
-    const visibleRuleGroups = ruleGroups.slice(0, MAX_RULES_PER_CATEGORY);
-    const hiddenRuleGroups = ruleGroups.slice(MAX_RULES_PER_CATEGORY);
-
-    for (const [rule, ruleDiagnostics] of visibleRuleGroups) {
-      lines.push(...buildCompactRuleGroupLines(rule, ruleDiagnostics));
-    }
-
-    hiddenCount += hiddenRuleGroups.reduce((total, [, ruleDiagnostics]) => total + ruleDiagnostics.length, 0);
   }
 
-  return { lines, hiddenCount };
+  return lines;
 };
 
 const printAnimatedLines = async (lines: string[], animate: boolean): Promise<void> => {
@@ -396,7 +273,7 @@ const printAnimatedLines = async (lines: string[], animate: boolean): Promise<vo
   }
 
   const visibleLineCount = Math.max(1, lines.filter((line) => line.trim().length > 0).length);
-  const delay = Math.max(8, Math.min(55, Math.floor(DIAGNOSTIC_ANIMATION_BUDGET_MS / visibleLineCount)));
+  const delay = Math.max(20, Math.min(100, Math.floor(DIAGNOSTIC_ANIMATION_BUDGET_MS / visibleLineCount)));
   for (const [index, line] of lines.entries()) {
     console.log(line);
     if (line.trim().length > 0 && index < lines.length - 1) await sleep(delay);
@@ -445,18 +322,8 @@ const printDiagnostics = async (
     return;
   }
 
-  const { lines, hiddenCount } = buildCompactDiagnosticsLines(diagnostics);
+  const lines = buildCompactDiagnosticsLines(diagnostics);
   await printAnimatedLines(lines, animate);
-  if (hiddenCount > 0) {
-    await printAnimatedLines(
-      [
-        "",
-        pc.dim(`  ${SYMBOLS.warning} ${hiddenCount} more diagnostics`),
-        pc.dim(`    ${SYMBOLS.arrow} Run \`npx -y @rekl0w/vue-doctor . --verbose\` to get all details.`),
-      ],
-      animate,
-    );
-  }
 };
 
 const encodeAnnotationValue = (value: string): string =>
@@ -511,10 +378,46 @@ const formatDisplayScanMode = (mode: JsonReportMode, flags: CliFlags): string =>
   return formatScanMode(mode);
 };
 
-const printRunHeader = (result: DiagnoseResult): void => {
+const printInspectHeader = (
+  mode: JsonReportMode,
+  flags: CliFlags,
+  workspaceCount: number,
+  parallelWorkers: number | undefined,
+): void => {
+  const workspaceLabel = `${workspaceCount} ${workspaceCount === 1 ? "workspace" : "workspaces"}`;
+  const parallelLabel = parallelWorkers ? `${parallelWorkers} workers` : "single-threaded";
+  console.log(`${pc.bold("vue-doctor")} ${pc.dim(`v${VERSION}`)}`);
+  console.log(pc.dim(`${formatDisplayScanMode(mode, flags)} - ${workspaceLabel} - ${parallelLabel}`));
+  console.log("");
+};
+
+const formatProjectStack = (result: DiagnoseResult): string => {
+  if (!result.project.hasVue) {
+    return `${pc.red(SYMBOLS.error)} Vue project was not detected ${pc.dim(`- ${formatSourceFileCount(result.project.sourceFileCount)}`)}`;
+  }
+
+  const framework = formatFrameworkName(result.project.framework);
+  const parts = [
+    framework,
+    result.project.vueVersion ? `Vue ${result.project.vueVersion}` : "Vue",
+    result.project.hasTypeScript ? "TypeScript" : "JavaScript",
+  ];
+  if (result.project.hasPinia) parts.push("Pinia");
+  if (result.project.hasVueRouter) parts.push("Vue Router");
+  parts.push(formatSourceFileCount(result.project.sourceFileCount));
+  return `${pc.green(SYMBOLS.ok)} ${parts.join(pc.dim(" / "))}`;
+};
+
+const printRunHeader = (result: DiagnoseResult, verbose: boolean): void => {
   const framework = formatFrameworkName(result.project.framework);
   console.log("");
   console.log(`${pc.bold("Project:")} ${result.project.projectName}`);
+
+  if (!verbose) {
+    console.log(formatProjectStack(result));
+    return;
+  }
+
   if (result.project.hasVue) {
     console.log(`${pc.green(SYMBOLS.ok)} Detecting framework. Found ${framework}.`);
   } else {
@@ -553,11 +456,11 @@ const printRunFooter = async (
       `${formatIssueCount(summary.totalDiagnosticCount)} across ${summary.affectedFileCount}/${result.project.sourceFileCount} files in ${formatElapsed(result.elapsedMilliseconds)}`,
     ),
   );
+  if (summary.totalDiagnosticCount > 0) {
+    console.log(pc.dim(`Run npx @rekl0w/vue-doctor@latest --verbose to list every issue with source frames.`));
+  }
   if (fullDiagnosticsPath) {
     console.log(pc.dim(`Full diagnostics written to ${fullDiagnosticsPath}`));
-  }
-  if (summary.totalDiagnosticCount > 0) {
-    console.log(pc.dim(`${SYMBOLS.arrow} Use --verbose for every diagnostic, --json for automation, or --score for CI gates.`));
   }
 };
 
@@ -780,12 +683,7 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
   let reportDiff: DiffInfo | null = null;
 
   if (!quiet) {
-    printBrandHeader(VERSION, [
-      ["Project", rootDirectory],
-      ["Mode", formatDisplayScanMode(mode, flags)],
-      ["Workspaces", projectDirectories.length],
-      ["Parallel", parallelWorkers ? `${parallelWorkers} workers` : "off"],
-    ]);
+    printInspectHeader(mode, flags, projectDirectories.length, parallelWorkers);
   }
 
   if (flags.offline && !quiet) {
@@ -857,7 +755,7 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
     const result = quiet
       ? await diagnose(projectDirectory, diagnoseOptions)
       : await runProductStep(
-          "Analyzing Vue source",
+          "Analyzing Vue source...",
           () => diagnose(projectDirectory, diagnoseOptions),
           (scanResult) =>
             `${formatSourceFileCount(scanResult.project.sourceFileCount)}, ${formatIssueCount(scanResult.diagnostics.length)}`,
@@ -921,7 +819,7 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
         console.log(pc.bold(`Project ${index + 1}/${scans.length}: ${scan.result.project.projectName}`));
         console.log("");
       }
-      printRunHeader(scan.result);
+      printRunHeader(scan.result, Boolean(flags.verbose));
       await printDiagnostics(scan.result.diagnostics, Boolean(flags.verbose || flags.prComment), animateOutput);
       await printRunFooter(scan.result, scans.length === 1 ? fullDiagnosticsPath : null, animateOutput);
       if (index < scans.length - 1) console.log("");
