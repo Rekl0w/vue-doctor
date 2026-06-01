@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const tempRoots: string[] = [];
 const repoRoot = path.resolve(import.meta.dirname, "..");
+const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+
+const stripAnsi = (value: string): string => value.replace(ANSI_PATTERN, "");
 
 const makeProject = (): string => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vue-doctor-cli-smoke-"));
@@ -28,7 +31,7 @@ const runCli = (args: string[]): string => {
   if (result.status !== 0) {
     throw new Error(result.stderr || result.stdout || `vue-doctor ${args.join(" ")} failed`);
   }
-  return result.stdout;
+  return stripAnsi(result.stdout);
 };
 
 afterEach(() => {
