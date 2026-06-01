@@ -73,8 +73,15 @@ const makeDiagnostic = (
 });
 
 const parseIndexAlias = (expression: string): string | null => {
-  const match = expression.match(/^\s*\(?\s*[^,\s)]+(?:\s*,\s*[^,\s)]+)?(?:\s*,\s*([^,\s)]+))?\s*\)?\s+(?:in|of)\s+/);
-  return match?.[1] ?? null;
+  const aliasMatch = expression.match(/^\s*(.*?)\s+(?:in|of)\s+/);
+  const aliasSource = aliasMatch?.[1]?.trim().replace(/^\(|\)$/g, "") ?? "";
+  const aliases = aliasSource
+    .split(",")
+    .map((alias) => alias.trim())
+    .filter(Boolean);
+  if (aliases.length === 2) return aliases[1]!;
+  if (aliases.length >= 3) return aliases[2]!;
+  return null;
 };
 
 const normalizeExpression = (expression: string): string =>
@@ -96,20 +103,32 @@ const containsExpensiveWork = (expression: string): boolean =>
     expression,
   );
 
+const containsHydrationUnstableWork = (expression: string): boolean =>
+  /\b(?:Math\.random|Date\.now|crypto\.randomUUID)\s*\(|\bnew\s+Date\s*\(/.test(expression);
+
 const shouldCheckDirectiveExpressionPurity = (directive: DirectiveNode): boolean =>
   directive.name !== "on" &&
   directive.name !== "model" &&
   !(directive.name === "bind" && directive.arg?.loc.source === "ref");
 
+const getAccessibleText = (children: TemplateChildNode[]): string =>
+  children
+    .map((child) => {
+      if (child.type === NodeTypes.TEXT || child.type === NodeTypes.INTERPOLATION) {
+        return child.loc.source;
+      }
+      if (child.type === NodeTypes.ELEMENT) {
+        return getAccessibleText(child.children);
+      }
+      return "";
+    })
+    .join("");
+
 const hasAccessibleName = (node: ElementNode): boolean => {
   if (getAttribute(node, "aria-label") || getDirective(node, "bind", "aria-label")) return true;
   if (getAttribute(node, "title") || getDirective(node, "bind", "title")) return true;
 
-  const text = node.children
-    .filter((child) => child.type === NodeTypes.TEXT || child.type === NodeTypes.INTERPOLATION)
-    .map((child) => child.loc.source)
-    .join("")
-    .trim();
+  const text = getAccessibleText(node.children).trim();
   return text.length > 0;
 };
 
@@ -139,6 +158,18 @@ const visitExpression = (
         category: "Performance",
         message: "This template expression performs work every render.",
         help: "Move expensive array/date/string formatting work into a computed value.",
+        column: 1,
+      }),
+    );
+  }
+
+  if (containsHydrationUnstableWork(expression)) {
+    report(
+      makeDiagnostic("no-hydration-unstable-template", lineOffset, localLine, {
+        severity: "warning",
+        category: "Correctness",
+        message: "Template expression can produce different server and client output.",
+        help: "Move random, time-based, or environment-specific values into mounted client state or server-provided data.",
         column: 1,
       }),
     );
@@ -207,8 +238,9 @@ const inspectElement = (node: ElementNode, lineOffset: number, report: ScanConte
   if (node.tag === "a") {
     const target = getAttributeValue(node, "target") ?? getBoundExpression(node, "target");
     const normalizedTarget = target ? normalizeExpression(target) : null;
-    const rel = getAttributeValue(node, "rel") ?? "";
-    if (normalizedTarget === "_blank" && !/\bnoopener\b/.test(rel)) {
+    const rel = getAttributeValue(node, "rel") ?? getBoundExpression(node, "rel") ?? "";
+    const normalizedRel = normalizeExpression(rel);
+    if (normalizedTarget === "_blank" && !/\bnoopener\b/.test(normalizedRel)) {
       report(
         makeDiagnostic("no-target-blank-without-rel", lineOffset, localLine, {
           severity: "error",

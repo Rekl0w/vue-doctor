@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0
+
+- Added `--markdown` and `--sarif` report formats, plus Node API helpers for generating Markdown and SARIF from JSON reports.
+- Added `recommended`, `strict`, and `design` presets with CLI and config support.
+- Added diagnostics baseline support through `--update-baseline`, `--baseline`, and the matching config field.
+- Added Vue/Nuxt-focused checks for public runtime secrets, top-level SSR browser globals, and hydration-unstable template expressions.
+- Reworked script scanning to use parser-aware AST traversal instead of raw regex matching for imports, eval, prop mutation, watcher cleanup, secrets, deprecated Vue 2 APIs, and deep watchers.
+- Fixed noisy false positives from fixture strings, regex literals, rule title maps, bound `rel` attributes, and buttons with nested text.
+- Fixed `v-for` index alias detection for two-alias forms such as `(item, idx) in items`.
+- Added CLI smoke tests for JSON, Markdown, SARIF, and baseline behavior.
+- Updated the GitHub Action with preset, baseline, Markdown, and SARIF inputs and pinned the internal npm invocation to the action release version.
+
 ## 0.2.0
 
 - Added React Doctor-style CLI workflows: `--diff`, `--staged`, `--project`, `--full`, `--json-compact`, `--offline`, and `--explain`.

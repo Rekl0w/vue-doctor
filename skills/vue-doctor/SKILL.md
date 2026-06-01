@@ -34,6 +34,11 @@ Fix errors first, then warnings. Use focused flags for automation:
 | `--project <name>` | Scan one or more workspace projects |
 | `--score` | Output only the numeric health score |
 | `--json` | Output a structured machine-readable report |
+| `--markdown` | Output a Markdown report |
+| `--sarif` | Output a SARIF 2.1.0 report |
+| `--preset <name>` | Use `recommended`, `strict`, or `design` rule behavior |
+| `--baseline <path>` | Ignore diagnostics already present in a baseline file |
+| `--update-baseline <path>` | Write the current diagnostics baseline |
 | `--fail-on warning` | Fail on any diagnostic |
 
 ## Suppressions

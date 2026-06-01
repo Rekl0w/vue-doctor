@@ -26,6 +26,12 @@ export const rules: RuleDefinition[] = [
     description: "Flag likely secrets committed to client code.",
   },
   {
+    name: "no-public-runtime-secret",
+    defaultSeverity: "error",
+    category: "Security",
+    description: "Avoid exposing secret-like keys through Nuxt public runtime config.",
+  },
+  {
     name: "require-v-for-key",
     defaultSeverity: "error",
     category: "Correctness",
@@ -60,6 +66,18 @@ export const rules: RuleDefinition[] = [
     defaultSeverity: "warning",
     category: "Correctness",
     description: "Flag Vue 2 APIs in Vue 3 projects.",
+  },
+  {
+    name: "no-ssr-browser-global",
+    defaultSeverity: "warning",
+    category: "Correctness",
+    description: "Avoid reading browser-only globals at module/setup time in SSR-capable projects.",
+  },
+  {
+    name: "no-hydration-unstable-template",
+    defaultSeverity: "warning",
+    category: "Correctness",
+    description: "Avoid random or time-based template expressions that can cause hydration mismatches.",
   },
   {
     name: "no-expensive-template-expression",

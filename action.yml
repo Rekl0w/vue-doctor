@@ -26,8 +26,29 @@ inputs:
   report-path:
     description: "Path for the JSON report when json is true"
     default: "vue-doctor-report.json"
+  markdown:
+    description: "Write a Markdown report file"
+    default: "false"
+  markdown-report-path:
+    description: "Path for the Markdown report when markdown is true"
+    default: "vue-doctor-report.md"
+  sarif:
+    description: "Write a SARIF report file"
+    default: "false"
+  sarif-report-path:
+    description: "Path for the SARIF report when sarif is true"
+    default: "vue-doctor.sarif"
   github-token:
     description: "GitHub token for posting PR comments. When set on pull_request events, findings are posted as a PR comment."
+    required: false
+  preset:
+    description: "Rule preset: recommended, strict, or design"
+    required: false
+  baseline:
+    description: "Path to a baseline file whose existing diagnostics should be ignored"
+    required: false
+  update-baseline:
+    description: "Path to write the current diagnostics baseline"
     required: false
   fail-on:
     description: "Exit with error code on diagnostics: error, warning, none"
@@ -46,6 +67,12 @@ outputs:
   report-path:
     description: "JSON report path when json is true"
     value: ${{ steps.report.outputs['report-path'] }}
+  markdown-report-path:
+    description: "Markdown report path when markdown is true"
+    value: ${{ steps.markdown-report.outputs['report-path'] }}
+  sarif-report-path:
+    description: "SARIF report path when sarif is true"
+    value: ${{ steps.sarif-report.outputs['report-path'] }}
 
 runs:
   using: "composite"
@@ -71,6 +98,9 @@ runs:
         INPUT_VERBOSE: ${{ inputs.verbose }}
         INPUT_PROJECT: ${{ inputs.project }}
         INPUT_DIFF: ${{ inputs.diff }}
+        INPUT_PRESET: ${{ inputs.preset }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_UPDATE_BASELINE: ${{ inputs.update-baseline }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_OFFLINE: ${{ inputs.offline }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
@@ -82,6 +112,9 @@ runs:
         if [ "$INPUT_VERBOSE" = "true" ]; then FLAGS+=("--verbose"); fi
         if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
         if [ -n "$INPUT_DIFF" ]; then FLAGS+=("--diff" "$INPUT_DIFF"); fi
+        if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
+        if [ -n "$INPUT_BASELINE" ]; then FLAGS+=("--baseline" "$INPUT_BASELINE"); fi
+        if [ -n "$INPUT_UPDATE_BASELINE" ]; then FLAGS+=("--update-baseline" "$INPUT_UPDATE_BASELINE"); fi
         if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
 
         OUTPUT_FILE="${RUNNER_TEMP:-/tmp}/vue-doctor-output-${GITHUB_RUN_ID:-$$}.txt"
@@ -89,13 +122,13 @@ runs:
 
         STATUS=0
         if [ -n "$INPUT_GITHUB_TOKEN" ]; then
-          npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" "${FLAGS[@]}" | tee "$OUTPUT_FILE" || STATUS=$?
+          npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" "${FLAGS[@]}" | tee "$OUTPUT_FILE" || STATUS=$?
 
           PR_REPORT_FILE="${RUNNER_TEMP:-/tmp}/vue-doctor-pr-report-${GITHUB_RUN_ID:-$$}.json"
           echo "VUE_DOCTOR_PR_REPORT_FILE=$PR_REPORT_FILE" >> "$GITHUB_ENV"
-          npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" --json --fail-on none "${FLAGS[@]:2}" > "$PR_REPORT_FILE" || rm -f "$PR_REPORT_FILE"
+          npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" --json --fail-on none "${FLAGS[@]:2}" > "$PR_REPORT_FILE" || rm -f "$PR_REPORT_FILE"
         else
-          npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" "${FLAGS[@]}" || STATUS=$?
+          npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" "${FLAGS[@]}" || STATUS=$?
         fi
 
         exit "$STATUS"
@@ -106,13 +139,17 @@ runs:
         INPUT_DIRECTORY: ${{ inputs.directory }}
         INPUT_PROJECT: ${{ inputs.project }}
         INPUT_DIFF: ${{ inputs.diff }}
+        INPUT_PRESET: ${{ inputs.preset }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
         INPUT_OFFLINE: ${{ inputs.offline }}
       run: |
         FLAGS=("--annotations" "--fail-on" "none")
         if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
         if [ -n "$INPUT_DIFF" ]; then FLAGS+=("--diff" "$INPUT_DIFF"); fi
+        if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
+        if [ -n "$INPUT_BASELINE" ]; then FLAGS+=("--baseline" "$INPUT_BASELINE"); fi
         if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
-        npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" "${FLAGS[@]}"
+        npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" "${FLAGS[@]}"
 
     - id: report
       if: ${{ always() && inputs.json == 'true' }}
@@ -122,14 +159,62 @@ runs:
         INPUT_REPORT_PATH: ${{ inputs.report-path }}
         INPUT_PROJECT: ${{ inputs.project }}
         INPUT_DIFF: ${{ inputs.diff }}
+        INPUT_PRESET: ${{ inputs.preset }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
         INPUT_OFFLINE: ${{ inputs.offline }}
       run: |
         mkdir -p "$(dirname "$INPUT_REPORT_PATH")"
         FLAGS=("--json" "--fail-on" "none")
         if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
         if [ -n "$INPUT_DIFF" ]; then FLAGS+=("--diff" "$INPUT_DIFF"); fi
+        if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
+        if [ -n "$INPUT_BASELINE" ]; then FLAGS+=("--baseline" "$INPUT_BASELINE"); fi
         if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
-        npx -y @rekl0w/vue-doctor@latest "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$INPUT_REPORT_PATH"
+        npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$INPUT_REPORT_PATH"
+        echo "report-path=$INPUT_REPORT_PATH" >> "$GITHUB_OUTPUT"
+
+    - id: markdown-report
+      if: ${{ always() && inputs.markdown == 'true' }}
+      shell: bash
+      env:
+        INPUT_DIRECTORY: ${{ inputs.directory }}
+        INPUT_REPORT_PATH: ${{ inputs.markdown-report-path }}
+        INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_DIFF: ${{ inputs.diff }}
+        INPUT_PRESET: ${{ inputs.preset }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_OFFLINE: ${{ inputs.offline }}
+      run: |
+        mkdir -p "$(dirname "$INPUT_REPORT_PATH")"
+        FLAGS=("--markdown" "--fail-on" "none")
+        if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
+        if [ -n "$INPUT_DIFF" ]; then FLAGS+=("--diff" "$INPUT_DIFF"); fi
+        if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
+        if [ -n "$INPUT_BASELINE" ]; then FLAGS+=("--baseline" "$INPUT_BASELINE"); fi
+        if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
+        npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$INPUT_REPORT_PATH"
+        echo "report-path=$INPUT_REPORT_PATH" >> "$GITHUB_OUTPUT"
+
+    - id: sarif-report
+      if: ${{ always() && inputs.sarif == 'true' }}
+      shell: bash
+      env:
+        INPUT_DIRECTORY: ${{ inputs.directory }}
+        INPUT_REPORT_PATH: ${{ inputs.sarif-report-path }}
+        INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_DIFF: ${{ inputs.diff }}
+        INPUT_PRESET: ${{ inputs.preset }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_OFFLINE: ${{ inputs.offline }}
+      run: |
+        mkdir -p "$(dirname "$INPUT_REPORT_PATH")"
+        FLAGS=("--sarif" "--fail-on" "none")
+        if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
+        if [ -n "$INPUT_DIFF" ]; then FLAGS+=("--diff" "$INPUT_DIFF"); fi
+        if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
+        if [ -n "$INPUT_BASELINE" ]; then FLAGS+=("--baseline" "$INPUT_BASELINE"); fi
+        if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
+        npx -y @rekl0w/vue-doctor@0.3.0 "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$INPUT_REPORT_PATH"
         echo "report-path=$INPUT_REPORT_PATH" >> "$GITHUB_OUTPUT"
 
     - id: score
@@ -139,13 +224,17 @@ runs:
         INPUT_DIRECTORY: ${{ inputs.directory }}
         INPUT_PROJECT: ${{ inputs.project }}
         INPUT_DIFF: ${{ inputs.diff }}
+        INPUT_PRESET: ${{ inputs.preset }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
         INPUT_OFFLINE: ${{ inputs.offline }}
       run: |
         SCORE_ARGS=("$INPUT_DIRECTORY" "--score" "--fail-on" "none")
         if [ -n "$INPUT_PROJECT" ]; then SCORE_ARGS+=("--project" "$INPUT_PROJECT"); fi
         if [ -n "$INPUT_DIFF" ]; then SCORE_ARGS+=("--diff" "$INPUT_DIFF"); fi
+        if [ -n "$INPUT_PRESET" ]; then SCORE_ARGS+=("--preset" "$INPUT_PRESET"); fi
+        if [ -n "$INPUT_BASELINE" ]; then SCORE_ARGS+=("--baseline" "$INPUT_BASELINE"); fi
         if [ "$INPUT_OFFLINE" = "true" ]; then SCORE_ARGS+=("--offline"); fi
-        SCORE=$(npx -y @rekl0w/vue-doctor@latest "${SCORE_ARGS[@]}" 2>/dev/null | tail -1 | tr -d '[:space:]') || true
+        SCORE=$(npx -y @rekl0w/vue-doctor@0.3.0 "${SCORE_ARGS[@]}" 2>/dev/null | tail -1 | tr -d '[:space:]') || true
         if [[ -n "$SCORE" && "$SCORE" =~ ^[0-9]+$ ]]; then
           echo "score=$SCORE" >> "$GITHUB_OUTPUT"
         fi

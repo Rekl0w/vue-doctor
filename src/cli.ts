@@ -12,6 +12,7 @@ import {
   toJsonReport,
   toJsonReportFromScans,
 } from "./scanner.js";
+import { toMarkdownReport, toSarifReport } from "./reporters.js";
 import type {
   Diagnostic,
   DiffInfo,
@@ -20,16 +21,22 @@ import type {
   JsonReport,
   JsonReportMode,
   ScoreResult,
+  VueDoctorConfig,
+  VueDoctorPreset,
 } from "./types.js";
 import { getDiffInfo, getStagedSourceFiles, filterSourceFiles } from "./utils/git.js";
 import { loadConfig } from "./utils/config.js";
 import { toRelativePath } from "./utils/path.js";
 import { runInstallSkill } from "./utils/install-skill.js";
 import { selectProjectDirectories } from "./utils/workspaces.js";
+import { calculateScore } from "./utils/scoring.js";
+import { filterDiagnosticsByBaseline, readBaselineKeys, writeBaseline } from "./utils/baseline.js";
 
 interface CliFlags {
   verbose?: boolean;
   json?: boolean;
+  markdown?: boolean;
+  sarif?: boolean;
   jsonCompact?: boolean;
   score?: boolean;
   annotations?: boolean;
@@ -41,6 +48,9 @@ interface CliFlags {
   diff?: boolean | string;
   project?: string;
   failOn?: string;
+  preset?: string;
+  baseline?: string;
+  updateBaseline?: string;
   config?: string;
   include?: string[];
   explain?: string;
@@ -60,6 +70,7 @@ interface CompletedScan {
 }
 
 const VALID_FAIL_ON_LEVELS = new Set<FailOnLevel>(["error", "warning", "none"]);
+const VALID_PRESETS = new Set<VueDoctorPreset>(["recommended", "strict", "design"]);
 const MAX_RULES_PER_CATEGORY = 3;
 const SCORE_BAR_WIDTH = 44;
 const SYMBOLS = {
@@ -88,6 +99,29 @@ const shouldFail = (diagnostics: Diagnostic[], failOn: FailOnLevel): boolean => 
 
 const resolveFailOn = (value: string | undefined): FailOnLevel =>
   VALID_FAIL_ON_LEVELS.has(value as FailOnLevel) ? (value as FailOnLevel) : DEFAULT_FAIL_ON;
+
+const resolvePreset = (value: string | undefined): VueDoctorPreset | undefined => {
+  if (value === undefined) return undefined;
+  if (VALID_PRESETS.has(value as VueDoctorPreset)) return value as VueDoctorPreset;
+  throw new Error(`Preset "${value}" is not supported. Use recommended, strict, or design.`);
+};
+
+const resolveOptionalPath = (rootDirectory: string, value: string | undefined): string | undefined =>
+  value ? path.resolve(rootDirectory, value) : undefined;
+
+const filterScanByBaseline = (scan: CompletedScan, baselineKeys: Set<string>): CompletedScan => {
+  const diagnostics = filterDiagnosticsByBaseline(scan.result.diagnostics, baselineKeys);
+  return {
+    directory: scan.directory,
+    result: {
+      ...scan.result,
+      diagnostics,
+      score: calculateScore(diagnostics, {
+        totalSourceFiles: scan.result.project.sourceFileCount,
+      }),
+    },
+  };
+};
 
 const printScore = (score: ScoreResult): void => {
   const color = colorByScore(score);
@@ -139,12 +173,15 @@ const RULE_TITLES: Record<string, string> = {
   "no-target-blank-without-rel": "Target blank without rel",
   "no-eval": "Dynamic code execution",
   "no-hardcoded-secret": "Hardcoded secret",
+  "no-public-runtime-secret": "Public runtime secret",
   "require-v-for-key": "Missing v-for key",
   "no-index-key": "Index key",
   "no-v-if-with-v-for": "v-if with v-for",
   "no-template-side-effects": "Template side effect",
   "no-mutating-props": "Mutating props",
   "no-vue2-deprecated-api": "Vue 2 deprecated API",
+  "no-ssr-browser-global": "SSR browser global",
+  "no-hydration-unstable-template": "Hydration-unstable template",
   "no-expensive-template-expression": "Expensive template expression",
   "no-deep-watch": "Deep watch",
   "watch-requires-cleanup": "Watcher needs cleanup",
@@ -420,15 +457,18 @@ const runExplain = async (
   rootDirectory: string,
   flags: CliFlags,
   explainValue: string,
+  configOverride?: VueDoctorConfig,
 ): Promise<void> => {
   const target = parseExplainTarget(explainValue);
   const activeResult = await diagnose(rootDirectory, {
     configPath: flags.config,
+    config: configOverride,
     includePaths: [target.file],
     respectInlineDisables: resolveRespectInlineDisables(flags),
   });
   const auditResult = await diagnose(rootDirectory, {
     configPath: flags.config,
+    config: configOverride,
     includePaths: [target.file],
     respectInlineDisables: false,
   });
@@ -488,19 +528,23 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
   const loaded = loadConfig(requestedDirectory, flags.config);
   const rootDirectory = loaded.rootDirectory;
   const failOn = resolveFailOn(flags.failOn ?? loaded.config.failOn);
+  const preset = resolvePreset(flags.preset ?? loaded.config.preset);
+  const configOverride: VueDoctorConfig | undefined = preset ? { preset } : undefined;
+  const baselinePath = resolveOptionalPath(rootDirectory, flags.baseline ?? loaded.config.baseline);
+  const updateBaselinePath = resolveOptionalPath(rootDirectory, flags.updateBaseline);
   const explainValue = flags.explain ?? flags.why;
 
   if (explainValue) {
-    await runExplain(rootDirectory, flags, explainValue);
+    await runExplain(rootDirectory, flags, explainValue, configOverride);
     return;
   }
 
-  const quiet = Boolean(flags.json || flags.score || flags.annotations);
+  const quiet = Boolean(flags.json || flags.markdown || flags.sarif || flags.score || flags.annotations);
   const projectDirectories = selectProjectDirectories(rootDirectory, flags.project, Boolean(flags.yes));
   const diffValue = resolveDiffValue(flags, loaded.config.diff);
   const mode: JsonReportMode = flags.staged ? "staged" : diffValue !== undefined && diffValue !== false ? "diff" : "full";
   const explicitBase = typeof diffValue === "string" ? diffValue : undefined;
-  const scans: CompletedScan[] = [];
+  let scans: CompletedScan[] = [];
   let reportDiff: DiffInfo | null = null;
 
   if (flags.offline && !quiet) {
@@ -544,10 +588,25 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
     const result = await diagnose(projectDirectory, {
       verbose: flags.verbose,
       configPath: flags.config,
+      config: configOverride,
       includePaths,
       respectInlineDisables: resolveRespectInlineDisables(flags),
     });
     scans.push({ directory: projectDirectory, result });
+  }
+
+  const rawDiagnostics = getAllDiagnostics(scans);
+  if (updateBaselinePath) {
+    writeBaseline(updateBaselinePath, rawDiagnostics);
+    if (!quiet) {
+      console.log(pc.dim(`Baseline written to ${updateBaselinePath}`));
+      console.log("");
+    }
+  }
+
+  if (baselinePath) {
+    const baselineKeys = readBaselineKeys(baselinePath);
+    scans = scans.map((scan) => filterScanByBaseline(scan, baselineKeys));
   }
 
   const report = toJsonReportFromScans(rootDirectory, scans, {
@@ -560,6 +619,10 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
   if (flags.staged && scans.length === 0) {
     if (flags.json) {
       process.stdout.write(`${JSON.stringify(report, null, flags.jsonCompact ? 0 : 2)}\n`);
+    } else if (flags.sarif) {
+      process.stdout.write(`${JSON.stringify(toSarifReport(report), null, flags.jsonCompact ? 0 : 2)}\n`);
+    } else if (flags.markdown) {
+      process.stdout.write(toMarkdownReport(report));
     } else if (!flags.score && !flags.annotations) {
       console.log(pc.dim("No staged source files found."));
     }
@@ -568,6 +631,10 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
 
   if (flags.json) {
     process.stdout.write(`${JSON.stringify(report, null, flags.jsonCompact ? 0 : 2)}\n`);
+  } else if (flags.sarif) {
+    process.stdout.write(`${JSON.stringify(toSarifReport(report), null, flags.jsonCompact ? 0 : 2)}\n`);
+  } else if (flags.markdown) {
+    process.stdout.write(toMarkdownReport(report));
   } else if (flags.score) {
     process.stdout.write(`${getWorstScore(scans).score}\n`);
   } else if (flags.annotations) {
@@ -616,6 +683,8 @@ export const runCli = async (argv = process.argv): Promise<void> => {
     .version(VERSION, "-v, --version")
     .option("--verbose", "show every diagnostic", false)
     .option("--json", "output a single structured JSON report", false)
+    .option("--markdown", "output a Markdown report", false)
+    .option("--sarif", "output a SARIF 2.1.0 report", false)
     .option("--json-compact", "with --json, emit compact JSON", false)
     .option("--score", "output only the score", false)
     .option("--annotations", "output GitHub Actions annotations", false)
@@ -627,6 +696,9 @@ export const runCli = async (argv = process.argv): Promise<void> => {
     .option("--staged", "scan staged git files", false)
     .option("--offline", "accepted for React Doctor parity; Vue Doctor always scores locally", false)
     .option("--fail-on <level>", "exit with error on diagnostics: error, warning, none", DEFAULT_FAIL_ON)
+    .option("--preset <name>", "rule preset: recommended, strict, design")
+    .option("--baseline <path>", "ignore diagnostics already present in a baseline file")
+    .option("--update-baseline <path>", "write the current diagnostics to a baseline file")
     .option("--config <path>", "path to vue-doctor.config.json")
     .option("--include <path>", "file or directory to scan; can be repeated or comma-separated", parseInclude, [])
     .option("--explain <file:line>", "show diagnostics and suppressed diagnostics near a specific location")

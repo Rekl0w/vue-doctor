@@ -46,8 +46,8 @@ Vue Doctor ships with focused rules that catch problems Vue teams repeatedly rev
 
 | Category | Rules |
 | --- | --- |
-| Security | `no-v-html`, `no-target-blank-without-rel`, `no-eval`, `no-hardcoded-secret` |
-| Correctness | `require-v-for-key`, `no-index-key`, `no-v-if-with-v-for`, `no-template-side-effects`, `no-mutating-props`, `no-vue2-deprecated-api` |
+| Security | `no-v-html`, `no-target-blank-without-rel`, `no-eval`, `no-hardcoded-secret`, `no-public-runtime-secret` |
+| Correctness | `require-v-for-key`, `no-index-key`, `no-v-if-with-v-for`, `no-template-side-effects`, `no-mutating-props`, `no-vue2-deprecated-api`, `no-ssr-browser-global`, `no-hydration-unstable-template` |
 | Performance | `no-expensive-template-expression`, `no-deep-watch`, `watch-requires-cleanup`, `no-transition-all`, `no-permanent-will-change` |
 | Accessibility | `require-img-alt`, `require-button-name`, `no-autofocus`, `no-disabled-zoom` |
 | Architecture | `no-large-component`, `no-too-many-props` |
@@ -66,6 +66,8 @@ Options:
   -v, --version          display the version number
   --verbose              show every diagnostic
   --json                 output a structured JSON report
+  --markdown             output a Markdown report
+  --sarif                output a SARIF 2.1.0 report
   --json-compact         with --json, emit compact JSON
   --score                output only the numeric score
   --annotations          output GitHub Actions annotations
@@ -75,6 +77,9 @@ Options:
   --full                 force a full scan
   --offline              accepted for React Doctor parity; scoring is local
   --fail-on <level>      exit with error on diagnostics: error, warning, none (default: error)
+  --preset <name>        rule preset: recommended, strict, design
+  --baseline <path>      ignore diagnostics already present in a baseline file
+  --update-baseline <path> write the current diagnostics to a baseline file
   --config <path>        path to vue-doctor.config.json
   --include <path>       file or directory to scan; repeat or comma-separate
   --explain <file:line>  show active and suppressed diagnostics near a line
@@ -90,6 +95,10 @@ npx vue-doctor --diff main --fail-on warning
 npx vue-doctor --staged
 npx vue-doctor --project web,admin --json
 npx vue-doctor --json > vue-doctor-report.json
+npx vue-doctor --markdown > vue-doctor-report.md
+npx vue-doctor --sarif > vue-doctor.sarif
+npx vue-doctor --update-baseline vue-doctor-baseline.json --fail-on none
+npx vue-doctor --baseline vue-doctor-baseline.json --fail-on warning
 npx vue-doctor --fail-on warning
 ```
 
@@ -99,8 +108,10 @@ Create `vue-doctor.config.json` in your repo:
 
 ```json
 {
+  "preset": "recommended",
   "failOn": "warning",
   "diff": "main",
+  "baseline": "vue-doctor-baseline.json",
   "maxComponentLines": 320,
   "maxProps": 12,
   "categories": {
@@ -126,6 +137,23 @@ Create `vue-doctor.config.json` in your repo:
 ```
 
 You can also place the same object under `vueDoctor` in `package.json`.
+
+### Presets and Baselines
+
+Use `preset` or `--preset` to tune the rule set:
+
+- `recommended`: default Vue Doctor behavior.
+- `strict`: upgrades default warnings to errors.
+- `design`: keeps security, correctness, accessibility, and design checks on while turning broader performance, architecture, maintainability, and bundle-size checks off unless explicitly re-enabled.
+
+Use baselines when adopting Vue Doctor in an existing codebase:
+
+```bash
+npx vue-doctor --update-baseline vue-doctor-baseline.json --fail-on none
+npx vue-doctor --baseline vue-doctor-baseline.json --fail-on warning
+```
+
+The baseline stores current diagnostics by file, rule, location, and message. Future scans with `--baseline` report only new or moved diagnostics.
 
 ### Inline Suppressions
 
@@ -166,22 +194,27 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: Rekl0w/vue-doctor@v0.2.0
+      - uses: Rekl0w/vue-doctor@v0.3.0
         id: vue-doctor
         with:
           directory: .
           diff: main
+          preset: strict
           fail-on: warning
           annotations: true
           json: true
           report-path: vue-doctor-report.json
+          sarif: true
+          sarif-report-path: vue-doctor.sarif
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: vue-doctor-report
-          path: ${{ steps.vue-doctor.outputs['report-path'] }}
+          path: |
+            ${{ steps.vue-doctor.outputs['report-path'] }}
+            ${{ steps.vue-doctor.outputs['sarif-report-path'] }}
 ```
 
 When `github-token` is set on pull requests, the action updates one Vue Doctor comment with a Markdown summary table and grouped diagnostics. The raw CLI output remains available in the workflow logs.
@@ -192,25 +225,30 @@ The action exposes the numeric health score as an output:
 ${{ steps.vue-doctor.outputs.score }}
 ```
 
-Inputs: `directory`, `verbose`, `project`, `diff`, `github-token`, `fail-on`, `offline`, `annotations`, `json`, `report-path`, and `node-version`.
+Inputs: `directory`, `verbose`, `project`, `diff`, `preset`, `baseline`, `update-baseline`, `github-token`, `fail-on`, `offline`, `annotations`, `json`, `report-path`, `markdown`, `markdown-report-path`, `sarif`, `sarif-report-path`, and `node-version`.
 
 Prefer not to use the action? The package works directly:
 
 ```yaml
 - run: npx @rekl0w/vue-doctor@latest --fail-on warning --annotations
 - run: npx @rekl0w/vue-doctor@latest --json --fail-on none > vue-doctor-report.json
+- run: npx @rekl0w/vue-doctor@latest --sarif --fail-on none > vue-doctor.sarif
 ```
 
 ## Node API
 
 ```ts
-import { diagnose, toJsonReport } from "@rekl0w/vue-doctor/api";
+import { diagnose, toJsonReport, toMarkdownReport, toSarifReport } from "@rekl0w/vue-doctor/api";
 
-const result = await diagnose("./apps/web");
+const result = await diagnose("./apps/web", {
+  config: { preset: "strict" },
+});
+const report = toJsonReport("./apps/web", result);
 
 console.log(result.score);
 console.log(result.diagnostics);
-console.log(toJsonReport("./apps/web", result));
+console.log(toMarkdownReport(report));
+console.log(toSarifReport(report));
 ```
 
 ## Publishing Checklist

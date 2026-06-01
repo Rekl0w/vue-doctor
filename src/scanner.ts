@@ -49,12 +49,30 @@ const getCategoryLevel = (
   return undefined;
 };
 
+const getPresetLevel = (
+  config: VueDoctorConfig,
+  category: string,
+  fallback: Severity,
+): Severity | "off" | undefined => {
+  if (config.preset === "strict") return fallback === "warning" ? "error" : fallback;
+  if (config.preset === "design") {
+    return ["Security", "Correctness", "Accessibility", "Design"].includes(category)
+      ? fallback
+      : "off";
+  }
+  return undefined;
+};
+
 const resolveSeverity = (
   config: VueDoctorConfig,
   ruleName: string,
   category: string,
   fallback: Severity,
-): Severity | "off" => getRuleLevel(config, ruleName) ?? getCategoryLevel(config, category) ?? fallback;
+): Severity | "off" =>
+  getRuleLevel(config, ruleName) ??
+  getCategoryLevel(config, category) ??
+  getPresetLevel(config, category, fallback) ??
+  fallback;
 
 const ruleIsGloballyIgnored = (config: VueDoctorConfig, ruleName: string): boolean => {
   const ignoredRules = config.ignore?.rules ?? [];

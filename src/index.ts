@@ -1,4 +1,5 @@
 export { diagnose, summarizeDiagnostics, toJsonReport, toJsonReportFromScans } from "./scanner.js";
+export { toMarkdownReport, toSarifReport } from "./reporters.js";
 export { rules } from "./rules/index.js";
 export type {
   Diagnostic,
@@ -14,4 +15,5 @@ export type {
   ScoreResult,
   Severity,
   VueDoctorConfig,
+  VueDoctorPreset,
 } from "./types.js";

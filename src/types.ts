@@ -4,6 +4,8 @@ export type FailOnLevel = "error" | "warning" | "none";
 
 export type RuleLevel = Severity | "off";
 
+export type VueDoctorPreset = "recommended" | "strict" | "design";
+
 export type DiagnosticCategory =
   | "Security"
   | "Correctness"
@@ -50,12 +52,14 @@ export interface VueDoctorIgnoreConfig {
 
 export interface VueDoctorConfig {
   rootDir?: string | undefined;
+  preset?: VueDoctorPreset | undefined;
   ignore?: VueDoctorIgnoreConfig | undefined;
   rules?: Record<string, RuleLevel> | undefined;
   categories?: Record<string, RuleLevel> | undefined;
   verbose?: boolean | undefined;
   failOn?: FailOnLevel | undefined;
   diff?: boolean | string | undefined;
+  baseline?: string | undefined;
   include?: string[] | undefined;
   maxComponentLines?: number | undefined;
   maxProps?: number | undefined;

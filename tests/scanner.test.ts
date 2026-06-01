@@ -208,6 +208,48 @@ const refs = []
     );
   });
 
+  it("handles common safe template edge cases without noisy diagnostics", async () => {
+    const root = makeProject({
+      "src/App.vue": `
+<template>
+  <ul>
+    <li v-for="(item, idx) in items" :key="idx">{{ item.name }}</li>
+  </ul>
+  <a href="https://example.com" target="_blank" :rel="'noopener noreferrer'">Docs</a>
+  <button><span class="sr-only">Close</span><Icon /></button>
+</template>
+<script setup>
+const items = [{ name: 'Docs' }]
+</script>
+`,
+    });
+
+    const result = await diagnose(root);
+    const rules = result.diagnostics.map((diagnostic) => diagnostic.rule);
+
+    expect(rules).toContain("no-index-key");
+    expect(rules).not.toContain("no-target-blank-without-rel");
+    expect(rules).not.toContain("require-button-name");
+  });
+
+  it("does not scan strings, regex literals, or rule title maps as runtime code", async () => {
+    const root = makeProject({
+      "src/rules.ts": `
+const examples = {
+  "no-hardcoded-secret": "Hardcoded secret",
+  fixture: \`
+    import _ from 'lodash'
+    props.html = 'changed'
+  \`
+}
+const evalPattern = /\\beval\\s*\\(/g
+`,
+    });
+
+    const result = await diagnose(root);
+    expect(result.diagnostics).toEqual([]);
+  });
+
   it("does not treat a props field named filters as the Vue 2 filters option", async () => {
     const root = makeProject({
       "src/App.vue": `
@@ -294,6 +336,45 @@ import * as monaco from 'monaco-editor'
     expect(rules).toContain("no-gradient-text");
   });
 
+  it("detects Vue and Nuxt-specific runtime risks", async () => {
+    const root = makeProject({
+      "package.json": JSON.stringify({
+        dependencies: {
+          nuxt: "^4.0.0",
+          vue: "^3.5.0",
+        },
+      }),
+      "nuxt.config.ts": `
+export default defineNuxtConfig({
+  runtimeConfig: {
+    public: {
+      apiToken: 'visible-to-client'
+    }
+  }
+})
+`,
+      "src/App.vue": `
+<template>
+  <p>{{ Math.random() }}</p>
+</template>
+`,
+      "src/client.ts": `
+const width = window.innerWidth
+if (typeof window !== 'undefined') {
+  window.addEventListener('resize', () => {})
+}
+`,
+    });
+
+    const result = await diagnose(root);
+    const rules = result.diagnostics.map((diagnostic) => diagnostic.rule);
+
+    expect(rules).toContain("no-public-runtime-secret");
+    expect(rules).toContain("no-hydration-unstable-template");
+    expect(rules).toContain("no-ssr-browser-global");
+    expect(rules.filter((rule) => rule === "no-ssr-browser-global")).toHaveLength(1);
+  });
+
   it("honors category-level config overrides", async () => {
     const root = makeProject({
       "vue-doctor.config.json": JSON.stringify({
@@ -316,5 +397,36 @@ import _ from 'lodash'
 
     expect(result.diagnostics.map((diagnostic) => diagnostic.rule)).not.toContain("no-outline-none");
     expect(result.diagnostics.find((diagnostic) => diagnostic.rule === "no-full-lodash-import")?.severity).toBe("error");
+  });
+
+  it("applies rule presets before explicit overrides", async () => {
+    const root = makeProject({
+      "src/App.vue": `
+<template>
+  <img src="/logo.png">
+</template>
+<script setup>
+import _ from 'lodash'
+</script>
+<style scoped>
+.button { outline: none; }
+</style>
+`,
+    });
+
+    const strictResult = await diagnose(root, { config: { preset: "strict" } });
+    expect(strictResult.diagnostics.find((diagnostic) => diagnostic.rule === "require-img-alt")?.severity).toBe("error");
+
+    const designResult = await diagnose(root, {
+      config: {
+        preset: "design",
+        rules: {
+          "vue-doctor/no-full-lodash-import": "warning",
+        },
+      },
+    });
+    const designRules = designResult.diagnostics.map((diagnostic) => diagnostic.rule);
+    expect(designRules).toContain("no-outline-none");
+    expect(designRules).toContain("no-full-lodash-import");
   });
 });

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CONFIG_FILENAMES, DEFAULT_FAIL_ON } from "../constants.js";
-import type { FailOnLevel, RuleLevel, VueDoctorConfig } from "../types.js";
+import type { FailOnLevel, RuleLevel, VueDoctorConfig, VueDoctorPreset } from "../types.js";
 
 export interface LoadedConfig {
   config: VueDoctorConfig;
@@ -50,6 +50,11 @@ const asDiff = (value: unknown): boolean | string | undefined => {
   return undefined;
 };
 
+const asPreset = (value: unknown): VueDoctorPreset | undefined => {
+  if (value === "recommended" || value === "strict" || value === "design") return value;
+  return undefined;
+};
+
 const asRuleLevelMap = (value: unknown): Record<string, RuleLevel> | undefined => {
   if (!isObject(value)) return undefined;
   const result: Record<string, RuleLevel> = {};
@@ -75,9 +80,11 @@ const normalizeConfig = (raw: Record<string, unknown>): VueDoctorConfig => {
 
   return {
     rootDir: typeof raw.rootDir === "string" ? raw.rootDir : undefined,
+    preset: asPreset(raw.preset),
     verbose: asBoolean(raw.verbose),
     failOn: asFailOn(raw.failOn) ?? DEFAULT_FAIL_ON,
     diff: asDiff(raw.diff),
+    baseline: typeof raw.baseline === "string" ? raw.baseline : undefined,
     include: asStringArray(raw.include),
     maxComponentLines: asPositiveInteger(raw.maxComponentLines),
     maxProps: asPositiveInteger(raw.maxProps),
