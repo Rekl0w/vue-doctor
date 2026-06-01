@@ -86,6 +86,9 @@ const VALID_PRESETS = new Set<VueDoctorPreset>(["recommended", "strict", "design
 const VALID_HANDOFF_MODES = new Set<HandoffMode>(["prompt", "copy", "print", "codex", "claude", "cursor", "skip"]);
 const MAX_RULES_PER_CATEGORY = 3;
 const SCORE_BAR_WIDTH = 44;
+const SCORE_ANIMATION_FRAMES = 32;
+const SCORE_ANIMATION_DELAY_MS = 22;
+const DIAGNOSTIC_ANIMATION_BUDGET_MS = 900;
 const SYMBOLS = {
   ok: "OK",
   error: "x",
@@ -121,6 +124,14 @@ const colorByScore = (score: ScoreResult): ((text: string) => string) => {
   if (score.score >= 50) return pc.yellow;
   return pc.red;
 };
+
+const sleep = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const easeOutCubic = (progress: number): number => 1 - (1 - progress) ** 3;
+
+const shouldAnimateCliOutput = (): boolean =>
+  canPrompt() && process.env.VUE_DOCTOR_NO_ANIMATION !== "true";
 
 const shouldFail = (diagnostics: Diagnostic[], failOn: FailOnLevel): boolean => {
   if (failOn === "none") return false;
@@ -164,16 +175,44 @@ const filterScanByBaseline = (scan: CompletedScan, baselineKeys: Set<string>): C
   };
 };
 
-const printScore = (score: ScoreResult): void => {
+const buildScoreLines = (score: ScoreResult, displayScore = score.score): string[] => {
   const color = colorByScore(score);
-  const filled = Math.round((score.score / 100) * SCORE_BAR_WIDTH);
-  const bar = `${"#".repeat(filled)}${"-".repeat(SCORE_BAR_WIDTH - filled)}`;
+  const normalizedDisplayScore = Math.max(0, Math.min(100, Math.round(displayScore)));
+  const filled = Math.round((normalizedDisplayScore / 100) * SCORE_BAR_WIDTH);
+  const bar = `${color("#".repeat(filled))}${pc.dim("-".repeat(SCORE_BAR_WIDTH - filled))}`;
   const face = score.score >= 75 ? "^_^" : score.score >= 50 ? "-_-" : "x_x";
-  const scoreLine = `${color(`${score.score} / 100`)} ${pc.dim(score.label)}`;
+  const scoreLine = `${color(String(normalizedDisplayScore))} ${pc.dim("/ 100")} ${color(score.label)}`;
 
-  console.log(`  +-------+  ${scoreLine}`);
-  console.log(`  | ${face.padEnd(5, " ")} |  ${color(bar)}`);
-  console.log(`  +-------+  ${pc.bold("Vue Doctor")}`);
+  return [
+    `  +-------+  ${scoreLine}`,
+    `  | ${face.padEnd(5, " ")} |  ${bar}`,
+    `  +-------+  ${pc.bold("Vue Doctor")}`,
+  ];
+};
+
+const writeScoreLines = (lines: string[]): void => {
+  for (const line of lines) {
+    process.stdout.write(`\r${line}\x1b[K\n`);
+  }
+};
+
+const printScore = async (score: ScoreResult, animate: boolean): Promise<void> => {
+  if (!animate) {
+    for (const line of buildScoreLines(score)) console.log(line);
+    return;
+  }
+
+  process.stdout.write("\x1b[?25l");
+  try {
+    for (let frame = 0; frame <= SCORE_ANIMATION_FRAMES; frame += 1) {
+      if (frame > 0) process.stdout.write("\x1b[3A");
+      const progress = easeOutCubic(frame / SCORE_ANIMATION_FRAMES);
+      writeScoreLines(buildScoreLines(score, score.score * progress));
+      if (frame < SCORE_ANIMATION_FRAMES) await sleep(SCORE_ANIMATION_DELAY_MS);
+    }
+  } finally {
+    process.stdout.write("\x1b[?25h");
+  }
 };
 
 const groupDiagnostics = (diagnostics: Diagnostic[]): Map<string, Diagnostic[]> => {
@@ -294,50 +333,74 @@ const wrapText = (text: string, indent: string, width = 88): string[] => {
   return lines.length > 0 ? lines : [indent];
 };
 
-const printWrappedDim = (text: string, indent: string): void => {
-  for (const line of wrapText(text, indent)) {
-    console.log(pc.dim(line));
-  }
-};
-
-const printCompactRuleGroup = (rule: string, diagnostics: Diagnostic[]): void => {
+const buildCompactRuleGroupLines = (rule: string, diagnostics: Diagnostic[]): string[] => {
   const sorted = sortDiagnosticsByImportance(diagnostics);
   const first = sorted[0]!;
   const countBadge = diagnostics.length > 1 ? ` x${diagnostics.length}` : "";
   const location = `${first.relativePath}:${first.line}`;
+  const lines = [
+    `  ${formatCompactSeverity(diagnostics)} ${pc.bold(toRuleTitle(rule))}${pc.dim(countBadge)}`,
+    ...wrapText(first.message, "    ").map((line) => pc.dim(line)),
+  ];
 
-  console.log(`  ${formatCompactSeverity(diagnostics)} ${pc.bold(toRuleTitle(rule))}${pc.dim(countBadge)}`);
-  printWrappedDim(first.message, "    ");
   if (first.help) {
-    printWrappedDim(first.help, "    ");
+    lines.push(...wrapText(first.help, "    ").map((line) => pc.dim(line)));
   }
-  console.log(pc.dim(`    ${location}`));
+  lines.push(pc.dim(`    ${location}`));
+  return lines;
 };
 
-const printCompactDiagnostics = (diagnostics: Diagnostic[]): number => {
+const formatCategoryIssueSummary = (diagnostics: Diagnostic[]): string => {
+  const errorCount = diagnostics.filter((diagnostic) => diagnostic.severity === "error").length;
+  const warningCount = diagnostics.length - errorCount;
+  const parts: string[] = [];
+  if (errorCount > 0) parts.push(pc.red(`${errorCount} ${errorCount === 1 ? "error" : "errors"}`));
+  if (warningCount > 0) {
+    parts.push(pc.yellow(`${warningCount} ${warningCount === 1 ? "warning" : "warnings"}`));
+  }
+  return parts.length > 0 ? parts.join(pc.dim(", ")) : pc.dim(formatIssueCount(diagnostics.length));
+};
+
+const buildCompactDiagnosticsLines = (
+  diagnostics: Diagnostic[],
+): { lines: string[]; hiddenCount: number } => {
   if (diagnostics.length === 0) {
-    console.log(pc.green("No Vue Doctor diagnostics found."));
-    return 0;
+    return { lines: [pc.green("No Vue Doctor diagnostics found.")], hiddenCount: 0 };
   }
 
   let hiddenCount = 0;
+  const lines: string[] = [];
   const categoryGroups = sortGroupsByImportance([...groupDiagnostics(diagnostics).entries()]);
   for (const [category, categoryDiagnostics] of categoryGroups) {
-    console.log("");
-    console.log(`${pc.bold(category)} ${pc.dim(formatIssueCount(categoryDiagnostics.length))}`);
+    lines.push("");
+    lines.push(`${pc.bold(category)} ${pc.dim(SYMBOLS.arrow)} ${formatCategoryIssueSummary(categoryDiagnostics)}`);
 
     const ruleGroups = sortGroupsByImportance([...groupByRule(categoryDiagnostics).entries()]);
     const visibleRuleGroups = ruleGroups.slice(0, MAX_RULES_PER_CATEGORY);
     const hiddenRuleGroups = ruleGroups.slice(MAX_RULES_PER_CATEGORY);
 
     for (const [rule, ruleDiagnostics] of visibleRuleGroups) {
-      printCompactRuleGroup(rule, ruleDiagnostics);
+      lines.push(...buildCompactRuleGroupLines(rule, ruleDiagnostics));
     }
 
     hiddenCount += hiddenRuleGroups.reduce((total, [, ruleDiagnostics]) => total + ruleDiagnostics.length, 0);
   }
 
-  return hiddenCount;
+  return { lines, hiddenCount };
+};
+
+const printAnimatedLines = async (lines: string[], animate: boolean): Promise<void> => {
+  if (!animate || lines.length <= 1) {
+    for (const line of lines) console.log(line);
+    return;
+  }
+
+  const visibleLineCount = Math.max(1, lines.filter((line) => line.trim().length > 0).length);
+  const delay = Math.max(8, Math.min(55, Math.floor(DIAGNOSTIC_ANIMATION_BUDGET_MS / visibleLineCount)));
+  for (const [index, line] of lines.entries()) {
+    console.log(line);
+    if (line.trim().length > 0 && index < lines.length - 1) await sleep(delay);
+  }
 };
 
 const printVerboseDiagnostics = (diagnostics: Diagnostic[]): void => {
@@ -372,17 +435,27 @@ const printCodeFrame = (diagnostic: Diagnostic): void => {
   } catch {}
 };
 
-const printDiagnostics = (diagnostics: Diagnostic[], verbose: boolean): void => {
+const printDiagnostics = async (
+  diagnostics: Diagnostic[],
+  verbose: boolean,
+  animate: boolean,
+): Promise<void> => {
   if (verbose) {
     printVerboseDiagnostics(diagnostics);
     return;
   }
 
-  const hiddenCount = printCompactDiagnostics(diagnostics);
+  const { lines, hiddenCount } = buildCompactDiagnosticsLines(diagnostics);
+  await printAnimatedLines(lines, animate);
   if (hiddenCount > 0) {
-    console.log("");
-    console.log(pc.dim(`  ${SYMBOLS.warning} ${hiddenCount} more diagnostics`));
-    console.log(pc.dim(`    ${SYMBOLS.arrow} Run \`npx -y @rekl0w/vue-doctor . --verbose\` to get all details.`));
+    await printAnimatedLines(
+      [
+        "",
+        pc.dim(`  ${SYMBOLS.warning} ${hiddenCount} more diagnostics`),
+        pc.dim(`    ${SYMBOLS.arrow} Run \`npx -y @rekl0w/vue-doctor . --verbose\` to get all details.`),
+      ],
+      animate,
+    );
   }
 };
 
@@ -466,13 +539,14 @@ const printRunHeader = (result: DiagnoseResult): void => {
   console.log(`${pc.green(SYMBOLS.ok)} Found ${formatSourceFileCount(result.project.sourceFileCount)}.`);
 };
 
-const printRunFooter = (
+const printRunFooter = async (
   result: DiagnoseResult,
   fullDiagnosticsPath: string | null,
-): void => {
+  animate: boolean,
+): Promise<void> => {
   const summary = summarizeDiagnostics(result.diagnostics);
   console.log("");
-  printScore(result.score);
+  await printScore(result.score, animate);
   console.log("");
   console.log(
     pc.dim(
@@ -837,18 +911,19 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
     printAnnotations(diagnostics);
   } else if (scans.length === 0) {
     console.log(pc.green("No Vue source files matched this scan."));
-    printScore({ score: 100, label: "Great" });
+    await printScore({ score: 100, label: "Great" }, shouldAnimateCliOutput());
   } else {
     const fullDiagnosticsPath =
       flags.verbose || diagnostics.length === 0 ? null : writeFullReport(rootDirectory, report);
+    const animateOutput = shouldAnimateCliOutput() && !flags.verbose && !flags.prComment && scans.length === 1;
     for (const [index, scan] of scans.entries()) {
       if (scans.length > 1) {
         console.log(pc.bold(`Project ${index + 1}/${scans.length}: ${scan.result.project.projectName}`));
         console.log("");
       }
       printRunHeader(scan.result);
-      printDiagnostics(scan.result.diagnostics, Boolean(flags.verbose || flags.prComment));
-      printRunFooter(scan.result, scans.length === 1 ? fullDiagnosticsPath : null);
+      await printDiagnostics(scan.result.diagnostics, Boolean(flags.verbose || flags.prComment), animateOutput);
+      await printRunFooter(scan.result, scans.length === 1 ? fullDiagnosticsPath : null, animateOutput);
       if (index < scans.length - 1) console.log("");
     }
     if (scans.length > 1 && fullDiagnosticsPath) {

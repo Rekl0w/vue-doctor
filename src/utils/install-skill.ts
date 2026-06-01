@@ -1,6 +1,4 @@
 import { existsSync } from "node:fs";
-import { createInterface } from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pc from "picocolors";
@@ -11,6 +9,7 @@ import {
   type SkillAgentType,
 } from "agent-install";
 import { detectAvailableAgents } from "./detect-agents.js";
+import { promptMultiChoice } from "./terminal.js";
 
 interface InstallSkillOptions {
   yes?: boolean | undefined;
@@ -33,30 +32,16 @@ const selectAgents = async (
   detectedAgents: SkillAgentType[],
   yes: boolean | undefined,
 ): Promise<SkillAgentType[]> => {
-  if (yes || !process.stdin.isTTY) return detectedAgents;
+  if (yes) return detectedAgents;
 
-  console.log("Detected coding agents:");
-  detectedAgents.forEach((agent, index) => {
-    console.log(`  ${index + 1}. ${formatAgent(agent)}`);
-  });
-
-  const readline = createInterface({ input, output });
-  try {
-    const answer = await readline.question("Install Vue Doctor skill for (comma-separated, Enter for all): ");
-    const trimmed = answer.trim();
-    if (!trimmed) return detectedAgents;
-
-    const selected = trimmed
-      .split(",")
-      .map((entry) => Number(entry.trim()))
-      .filter((entry) => Number.isInteger(entry) && entry >= 1 && entry <= detectedAgents.length)
-      .map((entry) => detectedAgents[entry - 1])
-      .filter((agent): agent is SkillAgentType => Boolean(agent));
-
-    return [...new Set(selected)];
-  } finally {
-    readline.close();
-  }
+  return promptMultiChoice(
+    "Install Vue Doctor skill for:",
+    detectedAgents.map((agent) => ({
+      value: agent,
+      label: formatAgent(agent),
+    })),
+    detectedAgents,
+  );
 };
 
 export const runInstallSkill = async (options: InstallSkillOptions = {}): Promise<void> => {

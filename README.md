@@ -25,7 +25,7 @@ Teach your coding agent the same Vue rules:
 npx @rekl0w/vue-doctor@latest install
 ```
 
-`install` now opens a setup wizard in interactive terminals and configures the project, not only the agent skill. It can add a `doctor` package script, install the dev dependency, write a GitHub Actions workflow, wire a pre-commit hook, and install the bundled coding-agent skill. Use `--yes` to accept the recommended setup without prompts, `--agent-hooks` to add native Claude/Cursor edit hooks when those project folders exist, or `--dry-run` to preview the exact work.
+`install` now opens an arrow-key setup wizard in interactive terminals and configures the project, not only the agent skill. It can add a `doctor` package script, install the dev dependency, write a GitHub Actions workflow, wire a pre-commit hook, and install the bundled coding-agent skill. Use `--yes` to accept the recommended setup without prompts, `--agent-hooks` to add native Claude/Cursor edit hooks when those project folders exist, or `--dry-run` to preview the exact work.
 
 Or install it in a repo:
 
@@ -40,7 +40,7 @@ The CLI prints a score:
 - 50 to 74: Needs work
 - 0 to 49: Critical
 
-Default output is compact and product-focused: Vue Doctor prints a branded run header, shows scan progress, groups diagnostics by category and rule, shows the most important examples, prints the score at the bottom, and writes the full JSON report to a temp file. Use `--verbose` when you want every file-level diagnostic with a source frame in the terminal.
+Default output is compact and product-focused: Vue Doctor prints a branded run header, shows scan progress, groups diagnostics by category and rule, shows the most important examples, animates the score bar at the bottom in interactive terminals, and writes the full JSON report to a temp file. Use `--verbose` when you want every file-level diagnostic with a source frame in the terminal.
 
 ## What It Checks
 
@@ -112,9 +112,9 @@ npx vue-doctor --copy-prompt --fail-on none
 npx vue-doctor --fail-on warning
 ```
 
-When diagnostics are found in an interactive terminal, Vue Doctor can hand them to an agent. It writes a full diagnostics directory, builds a focused repair prompt, and can launch Codex, Claude Code, or Cursor Agent when their CLIs are available. Non-interactive runs skip the prompt unless you pass `--copy-prompt`, `--print-prompt`, or `--handoff <mode>`.
+When diagnostics are found in an interactive terminal, Vue Doctor can hand them to an agent through an arrow-key menu. It writes a full diagnostics directory, builds a focused repair prompt, and can launch Codex, Claude Code, or Cursor Agent when their CLIs are available. Non-interactive runs skip the prompt unless you pass `--copy-prompt`, `--print-prompt`, or `--handoff <mode>`.
 
-If you do not pass `--diff`, `--staged`, `--full`, `--include`, or `--changed-files-from`, interactive terminals can ask whether to scan changed files, staged files, or the full project. In coding-agent environments, Vue Doctor shows the repo setup hint once per project when the package script/dependency is not installed yet.
+If you do not pass `--diff`, `--staged`, `--full`, `--include`, or `--changed-files-from`, interactive terminals can ask whether to scan changed files, staged files, or the full project with arrow-key navigation. In coding-agent environments, Vue Doctor shows the repo setup hint once per project when the package script/dependency is not installed yet.
 
 ## Configuration
 

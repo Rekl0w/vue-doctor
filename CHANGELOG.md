@@ -4,6 +4,9 @@
 
 - Fixed non-Vue repositories being reported as a perfect 100 health score by adding a `vue-project-not-found` diagnostic when no Vue dependency, Vue framework, or `.vue` source files are detected.
 - Refined the coding-agent setup hint to match the install handoff flow: ask the user first, then run `npx @rekl0w/vue-doctor@latest install --yes`.
+- Replaced numeric interactive prompts with arrow-key menus for scan selection, diagnostics handoff, setup confirmations, and agent skill installation.
+- Added Space-toggle multi-select support for choosing which detected coding agents receive the bundled Vue Doctor skill.
+- Added interactive terminal polish with paced diagnostic rendering and an animated score bar while keeping CI and structured outputs stable.
 
 ## 0.4.0
 

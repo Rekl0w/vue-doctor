@@ -1,10 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { createInterface } from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
 import pc from "picocolors";
 import { VERSION } from "../constants.js";
 import type { Diagnostic, JsonReport } from "../types.js";
 import { writeDiagnosticsDirectory } from "./diagnostics-directory.js";
+import { promptChoice, type Choice } from "./terminal.js";
 
 export type HandoffMode = "prompt" | "copy" | "print" | "codex" | "claude" | "cursor" | "skip";
 
@@ -139,29 +138,14 @@ const launchAgent = (mode: HandoffMode, prompt: string, cwd: string): boolean =>
 
 const promptForMode = async (): Promise<HandoffMode> => {
   const agents = availableAgents();
-  const choices: Array<{ mode: HandoffMode; label: string }> = [
-    ...agents.map((agent) => ({ mode: agent.mode, label: `Launch ${agent.label}` })),
-    { mode: "copy", label: "Copy prompt to clipboard" },
-    { mode: "print", label: "Print prompt" },
-    { mode: "skip", label: "Skip" },
+  const choices: Array<Choice<HandoffMode>> = [
+    ...agents.map((agent) => ({ value: agent.mode, label: `Launch ${agent.label}` })),
+    { value: "copy", label: "Copy prompt to clipboard" },
+    { value: "print", label: "Print prompt" },
+    { value: "skip", label: "Skip" },
   ];
 
-  console.log("");
-  console.log(pc.bold("Hand these Vue Doctor diagnostics to an agent?"));
-  choices.forEach((choice, index) => {
-    console.log(`  ${index + 1}. ${choice.label}`);
-  });
-
-  const readline = createInterface({ input, output });
-  try {
-    const answer = await readline.question("Choose an option (Enter to skip): ");
-    const index = Number(answer.trim());
-    return Number.isInteger(index) && index >= 1 && index <= choices.length
-      ? choices[index - 1]!.mode
-      : "skip";
-  } finally {
-    readline.close();
-  }
+  return promptChoice("Hand these Vue Doctor diagnostics to an agent?", choices, "skip");
 };
 
 export const runAgentHandoff = async (

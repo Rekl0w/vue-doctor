@@ -21,6 +21,7 @@ interface InstallStep {
   label: string;
   detail: string;
   run: () => void | Promise<void>;
+  prompts?: boolean | undefined;
 }
 
 interface InstallSelection {
@@ -345,6 +346,7 @@ const buildSteps = (
     steps.push({
       label: "agent skill",
       detail: "Install bundled Vue Doctor skill into detected coding agents",
+      prompts: true,
       run: async () => {
         try {
           await runInstallSkill({ yes: options.yes, dryRun: false, cwd: root });
@@ -413,6 +415,18 @@ export const runInstallOnboarding = async (options: InstallOnboardingOptions = {
   }
 
   for (const step of steps) {
+    if (step.prompts && canPrompt() && !options.yes) {
+      console.log(`- ${step.label}`);
+      try {
+        await step.run();
+        console.log(`${pc.green("OK")} ${step.label}${pc.dim(` - ${step.detail}`)}`);
+      } catch (error) {
+        console.log(`${pc.red("x")} ${step.label}`);
+        throw error;
+      }
+      continue;
+    }
+
     await runProductStep(step.label, async () => {
       await step.run();
       return step;
