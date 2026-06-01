@@ -221,6 +221,25 @@ export const scanFile = (
   return scanScriptFile(filePath, rootDirectory, source, config, project);
 };
 
+const createVueProjectNotFoundDiagnostic = (
+  rootDirectory: string,
+): Diagnostic => {
+  const packageJsonPath = path.join(rootDirectory, "package.json");
+  const fallbackPath = fs.existsSync(packageJsonPath) ? packageJsonPath : rootDirectory;
+  return {
+    filePath: fallbackPath,
+    relativePath: fs.existsSync(packageJsonPath) ? "package.json" : ".",
+    plugin: PLUGIN_NAME,
+    rule: "vue-project-not-found",
+    severity: "error",
+    category: "Correctness",
+    message: "Vue project was not detected.",
+    help: "Run Vue Doctor from a Vue/Nuxt project, or add a vue dependency or .vue source files before relying on Vue diagnostics.",
+    line: 1,
+    column: 1,
+  };
+};
+
 const MAX_PARALLEL_WORKERS = 8;
 
 const normalizeWorkerCount = (requested: number | undefined, fileCount: number): number => {
@@ -296,6 +315,19 @@ export const diagnose = async (
   const project = discoverProject(rootDirectory);
   const files = discoverSourceFiles(rootDirectory, includePaths, {}, config);
 
+  if (!project.hasVue) {
+    const diagnostics = [createVueProjectNotFoundDiagnostic(rootDirectory)];
+    return {
+      diagnostics,
+      score: calculateScore(diagnostics, { totalSourceFiles: Math.max(files.length, 1) }),
+      project: {
+        ...project,
+        sourceFileCount: files.length,
+      },
+      elapsedMilliseconds: performance.now() - start,
+    };
+  }
+
   const diagnostics = await scanFiles(
     files,
     rootDirectory,
@@ -365,6 +397,7 @@ const buildAggregateProject = (directory: string, scans: JsonReportScan[]): Proj
     rootDirectory: path.resolve(directory),
     projectName: path.basename(path.resolve(directory)),
     vueVersion: null,
+    hasVue: scans.some((scan) => scan.result.project.hasVue),
     framework: "unknown",
     hasTypeScript: scans.some((scan) => scan.result.project.hasTypeScript),
     hasPinia: scans.some((scan) => scan.result.project.hasPinia),

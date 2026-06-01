@@ -1,6 +1,6 @@
 {
   "name": "@rekl0w/vue-doctor",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Diagnose Vue codebases for security, performance, correctness, accessibility, and architecture issues",
   "keywords": [
     "accessibility",

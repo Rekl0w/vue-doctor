@@ -7,6 +7,8 @@ description: Use before committing Vue, Nuxt, Vite Vue, Vue CLI, Quasar, VitePre
 
 Vue Doctor scans Vue codebases and returns a 0-100 health score with actionable diagnostics.
 
+If Vue Doctor reports `vue-doctor/vue-project-not-found`, stop and confirm the target is actually a Vue/Nuxt repository before making Vue-specific changes.
+
 ## Quick Checks
 
 Before committing Vue changes, run:

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- Fixed non-Vue repositories being reported as a perfect 100 health score by adding a `vue-project-not-found` diagnostic when no Vue dependency, Vue framework, or `.vue` source files are detected.
+- Refined the coding-agent setup hint to match the install handoff flow: ask the user first, then run `npx @rekl0w/vue-doctor@latest install --yes`.
+
 ## 0.4.0
 
 - Expanded `vue-doctor install` into full project onboarding: package script, dev dependency install, GitHub Actions workflow, Git pre-commit hook support, bundled agent skill install, dry-run previews, and optional native Claude/Cursor edit hooks.

@@ -78,6 +78,7 @@ export type VueFramework =
 export interface ProjectInfo {
   rootDirectory: string;
   projectName: string;
+  hasVue: boolean;
   vueVersion: string | null;
   framework: VueFramework;
   hasTypeScript: boolean;

@@ -5,7 +5,9 @@ import path from "node:path";
 import pc from "picocolors";
 import { canPrompt } from "./terminal.js";
 
-const STATE_PATH = path.join(os.homedir(), ".vue-doctor", "setup-hints.json");
+const STATE_PATH = process.env.VUE_DOCTOR_SETUP_HINT_STORE
+  ? path.resolve(process.env.VUE_DOCTOR_SETUP_HINT_STORE)
+  : path.join(os.homedir(), ".vue-doctor", "setup-hints.json");
 const PACKAGE_NAME = "@rekl0w/vue-doctor";
 
 const readJsonFile = (filePath: string): Record<string, unknown> | null => {
@@ -62,9 +64,16 @@ export const maybePrintSetupHint = (rootDirectory: string): void => {
   if (state[key]) return;
 
   console.log("");
-  console.log(pc.bold("Keep Vue Doctor installed in this repo?"));
-  console.log(pc.dim("Run this once to add the script, CI workflow, hooks, and agent skill:"));
-  console.log("  npx @rekl0w/vue-doctor@latest install");
+  console.log(pc.bold("Vue Doctor is not installed in this project."));
+  console.log("Ask the user if they would like to set it up, then run:");
+  console.log("");
+  console.log("  npx @rekl0w/vue-doctor@latest install --yes");
+  console.log("");
+  console.log(
+    pc.dim(
+      "This adds agent skill files, a `doctor` package script, Git hooks, a GitHub Actions workflow, and @rekl0w/vue-doctor as a dev dependency.",
+    ),
+  );
   state[key] = true;
   writeState(state);
 };

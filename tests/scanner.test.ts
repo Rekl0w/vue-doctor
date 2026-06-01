@@ -36,6 +36,20 @@ const makeProject = (files: Record<string, string>): string => {
   return root;
 };
 
+const makeRawProject = (packageJson: unknown, files: Record<string, string>): string => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vue-doctor-"));
+  tempRoots.push(root);
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(packageJson, null, 2));
+
+  for (const [relativePath, content] of Object.entries(files)) {
+    const filePath = path.join(root, relativePath);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content);
+  }
+
+  return root;
+};
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -43,6 +57,30 @@ afterEach(() => {
 });
 
 describe("diagnose", () => {
+  it("reports a non-Vue project instead of returning a healthy score", async () => {
+    const root = makeRawProject(
+      {
+        name: "react-app",
+        dependencies: {
+          react: "^18.2.0",
+          "react-dom": "^18.2.0",
+        },
+      },
+      {
+        "src/App.jsx": "import _ from 'lodash'; export function App() { return <div /> }\n",
+      },
+    );
+
+    const result = await diagnose(root);
+
+    expect(result.project.hasVue).toBe(false);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]?.rule).toBe("vue-project-not-found");
+    expect(result.diagnostics[0]?.message).toContain("Vue project was not detected");
+    expect(result.score.score).toBeLessThan(100);
+    expect(result.score.label).not.toBe("Great");
+  });
+
   it("detects Vue template security, correctness, and accessibility issues", async () => {
     const root = makeProject({
       "src/App.vue": `

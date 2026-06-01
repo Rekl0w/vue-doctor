@@ -9,6 +9,8 @@ Vue Doctor scans Vue codebases and returns a 0 to 100 health score with actionab
 
 It understands Vue single-file components through the official Vue compiler, so it can inspect real `<template>`, `<script setup>`, classic `<script>`, and `<style>` blocks instead of pretending `.vue` files are plain text.
 
+When Vue Doctor is run outside a Vue project, it reports `vue-doctor/vue-project-not-found` instead of returning a misleading perfect score.
+
 ## Install
 
 Run this at your project root:
@@ -47,7 +49,7 @@ Vue Doctor ships with focused rules that catch problems Vue teams repeatedly rev
 | Category | Rules |
 | --- | --- |
 | Security | `no-v-html`, `no-target-blank-without-rel`, `no-eval`, `no-hardcoded-secret`, `no-public-runtime-secret` |
-| Correctness | `require-v-for-key`, `no-index-key`, `no-v-if-with-v-for`, `no-template-side-effects`, `no-mutating-props`, `no-vue2-deprecated-api`, `no-ssr-browser-global`, `no-hydration-unstable-template` |
+| Correctness | `vue-project-not-found`, `require-v-for-key`, `no-index-key`, `no-v-if-with-v-for`, `no-template-side-effects`, `no-mutating-props`, `no-vue2-deprecated-api`, `no-ssr-browser-global`, `no-hydration-unstable-template` |
 | Performance | `no-expensive-template-expression`, `no-deep-watch`, `watch-requires-cleanup`, `no-transition-all`, `no-permanent-will-change` |
 | Accessibility | `require-img-alt`, `require-button-name`, `no-autofocus`, `no-disabled-zoom` |
 | Architecture | `no-large-component`, `no-too-many-props` |

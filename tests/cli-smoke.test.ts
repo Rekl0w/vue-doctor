@@ -40,7 +40,7 @@ afterEach(() => {
 describe("CLI smoke", () => {
   it("prints detailed version information", () => {
     const output = runCli(["version"]);
-    expect(output).toContain("vue-doctor 0.4.0");
+    expect(output).toContain("vue-doctor 0.4.1");
     expect(output).toContain("node ");
   });
 
@@ -73,6 +73,23 @@ describe("CLI smoke", () => {
     expect(output).toContain("Analyzing Vue source");
     expect(output).toContain("require-img-alt");
     expect(output).toContain("| <template><img src=\"/logo.png\"></template>");
+  });
+
+  it("prints a clear non-Vue project diagnostic", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vue-doctor-non-vue-"));
+    tempRoots.push(root);
+    fs.writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "react-app", dependencies: { react: "^18.2.0" } }),
+    );
+    fs.mkdirSync(path.join(root, "src"), { recursive: true });
+    fs.writeFileSync(path.join(root, "src", "App.jsx"), "export const App = () => null\n");
+
+    const output = runCli([root, "--fail-on", "none", "--handoff", "skip"]);
+
+    expect(output).toContain("Vue project was not detected");
+    expect(output).toContain("Vue project not found");
+    expect(output).not.toContain("100 / 100");
   });
 
   it("can write and apply a diagnostics baseline", () => {

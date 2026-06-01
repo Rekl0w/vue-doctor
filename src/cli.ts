@@ -244,6 +244,7 @@ const RULE_TITLES: Record<string, string> = {
   "no-z-index-9999": "Magic z-index",
   "no-pure-black-background": "Pure black background",
   "no-gradient-text": "Gradient text",
+  "vue-project-not-found": "Vue project not found",
 };
 
 const toRuleTitle = (ruleName: string): string => {
@@ -441,7 +442,11 @@ const printRunHeader = (result: DiagnoseResult): void => {
   const framework = formatFrameworkName(result.project.framework);
   console.log("");
   console.log(`${pc.bold("Project:")} ${result.project.projectName}`);
-  console.log(`${pc.green(SYMBOLS.ok)} Detecting framework. Found ${framework}.`);
+  if (result.project.hasVue) {
+    console.log(`${pc.green(SYMBOLS.ok)} Detecting framework. Found ${framework}.`);
+  } else {
+    console.log(`${pc.red(SYMBOLS.error)} Detecting Vue framework. Not found.`);
+  }
   console.log(
     `${pc.green(SYMBOLS.ok)} Detecting Vue version. ${
       result.project.vueVersion ? `Found Vue ${result.project.vueVersion}.` : "No Vue dependency found."
@@ -852,13 +857,13 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
     }
   }
 
-  if (!quiet && diagnostics.length > 0) {
+  if (!quiet && report.project.hasVue && diagnostics.length > 0) {
     await runAgentHandoff(report, {
       cwd: rootDirectory,
       mode: resolveHandoffMode(flags) ?? "prompt",
     });
   }
-  if (!quiet) maybePrintSetupHint(rootDirectory);
+  if (!quiet && report.project.hasVue) maybePrintSetupHint(rootDirectory);
 
   process.exitCode = shouldFail(diagnostics, failOn) ? 1 : 0;
 };

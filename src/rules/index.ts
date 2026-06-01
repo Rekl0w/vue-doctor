@@ -2,6 +2,12 @@ import type { RuleDefinition } from "../types.js";
 
 export const rules: RuleDefinition[] = [
   {
+    name: "vue-project-not-found",
+    defaultSeverity: "error",
+    category: "Correctness",
+    description: "Vue Doctor should run from a Vue, Nuxt, or Vue SFC project.",
+  },
+  {
     name: "no-v-html",
     defaultSeverity: "error",
     category: "Security",
