@@ -269,14 +269,6 @@ console.log(toMarkdownReport(report));
 console.log(toSarifReport(report));
 ```
 
-## Publishing Checklist
-
-1. Confirm your npm account has publish access to the `@rekl0w` scope.
-2. Confirm the GitHub repository is `Rekl0w/vue-doctor`.
-3. Run `npm run check`.
-4. Run `npm publish --access public`.
-5. Tag the release if you want the GitHub Action path to be stable.
-
 ## References
 
 Vue Doctor was built with [`millionco/react-doctor`](https://github.com/millionco/react-doctor) as the product and package-quality reference: CLI-first workflow, score output, CI action, JSON reports, config ergonomics, and open-source repository hygiene. The implementation here is Vue-native rather than a port: it uses the official Vue compiler to inspect SFC templates, scripts, and styles.
