@@ -121,6 +121,8 @@ npx vue-doctor --blocking warning
 
 When diagnostics are found in an interactive terminal, Vue Doctor can hand them to an agent through an arrow-key menu. It writes a full diagnostics directory, builds a focused repair prompt, and can launch Codex, Claude Code, or Cursor Agent when their CLIs are available. Non-interactive runs skip the prompt unless you pass `--copy-prompt`, `--print-prompt`, or `--handoff <mode>`.
 
+After the first local scan in an interactive project, Vue Doctor can also offer to keep watching the repo. Choose the setup wizard to add a `doctor` package script, the dev dependency, GitHub Actions PR review workflow, Git hook, and bundled agent skill from the same flow.
+
 If you do not pass `--scope`, `--diff`, `--staged`, `--full`, `--include`, or `--changed-files-from`, interactive terminals can ask whether to scan changed files, staged files, or the full project with arrow-key navigation. In coding-agent environments, Vue Doctor shows the repo setup hint once per project when the package script/dependency is not installed yet.
 
 ## Configuration
@@ -160,6 +162,19 @@ Create `vue-doctor.config.json` in your repo:
 ```
 
 You can also place the same object under `vueDoctor` in `package.json`. Legacy `failOn` and `diff` config fields are still accepted, but new projects should prefer `blocking`, `scope`, and `base`.
+
+Typed configs are supported too:
+
+```ts
+import { defineConfig } from "@rekl0w/vue-doctor";
+
+export default defineConfig({
+  preset: "strict",
+  scope: "changed",
+  base: "main",
+  blocking: "warning",
+});
+```
 
 ### Presets and Baselines
 
@@ -232,6 +247,7 @@ name: Vue Doctor
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -240,6 +256,10 @@ permissions:
   issues: write
   pull-requests: write
   statuses: write
+
+concurrency:
+  group: vue-doctor-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   vue-doctor:

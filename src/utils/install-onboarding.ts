@@ -129,6 +129,7 @@ const writeWorkflow = (root: string): string => {
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -137,6 +138,10 @@ permissions:
   issues: write
   pull-requests: write
   statuses: write
+
+concurrency:
+  group: vue-doctor-\${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   vue-doctor:

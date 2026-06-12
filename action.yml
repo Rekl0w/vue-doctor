@@ -350,20 +350,15 @@ runs:
       with:
         github-token: ${{ inputs.github-token || github.token }}
         script: |
-          const fs = require("fs");
+          const {
+            buildReviewComments,
+            getPriorReviewCommentIds,
+            readReport,
+          } = require(`${process.env.GITHUB_ACTION_PATH}/scripts/github-action-feedback.cjs`);
           const reportPath = process.env.REPORT_FILE;
-          if (!reportPath || !fs.existsSync(reportPath)) return;
-          let report;
-          try {
-            report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
-          } catch {
-            return;
-          }
+          const report = readReport(reportPath);
+          if (!report) return;
           if (report.ok === false) return;
-
-          const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics : [];
-          const marker = "<!-- vue-doctor:review -->";
-          const directoryPrefix = (process.env.INPUT_DIRECTORY || ".").replace(/^\.\/?/, "").replace(/\/$/, "");
 
           let files;
           try {
@@ -377,56 +372,7 @@ runs:
             return;
           }
 
-          const commentableLinesByFile = new Map();
-          for (const file of files) {
-            if (!file.patch) continue;
-            const lines = new Set();
-            let newLine = 0;
-            for (const patchLine of file.patch.split("\n")) {
-              const hunk = patchLine.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-              if (hunk) {
-                newLine = Number(hunk[1]);
-                continue;
-              }
-              if (patchLine.startsWith("+") || patchLine.startsWith(" ")) {
-                lines.add(newLine);
-                newLine += 1;
-              }
-            }
-            commentableLinesByFile.set(file.filename, lines);
-          }
-
-          const toRepoPath = (filePath) => {
-            const normalized = String(filePath || "").replace(/\\/g, "/").replace(/^\.\//, "");
-            if (commentableLinesByFile.has(normalized)) return normalized;
-            const prefixed = directoryPrefix ? `${directoryPrefix}/${normalized}` : normalized;
-            if (commentableLinesByFile.has(prefixed)) return prefixed;
-            const suffixMatches = [...commentableLinesByFile.keys()].filter((name) => name.endsWith(`/${normalized}`));
-            return suffixMatches.length === 1 ? suffixMatches[0] : null;
-          };
-
-          const seen = new Set();
-          const comments = [];
-          for (const diagnostic of diagnostics) {
-            if (!diagnostic || typeof diagnostic.line !== "number" || diagnostic.line <= 0) continue;
-            const repoPath = toRepoPath(diagnostic.relativePath || diagnostic.filePath);
-            if (!repoPath) continue;
-            const commentableLines = commentableLinesByFile.get(repoPath);
-            if (!commentableLines || !commentableLines.has(diagnostic.line)) continue;
-            const ruleKey = `${diagnostic.plugin || "vue-doctor"}/${diagnostic.rule || "unknown-rule"}`;
-            const dedupeKey = `${repoPath}:${diagnostic.line}:${ruleKey}`;
-            if (seen.has(dedupeKey)) continue;
-            seen.add(dedupeKey);
-            const severity = diagnostic.severity === "error" ? "error" : "warning";
-            const fixLine = diagnostic.help ? `\n\n**Fix** -> ${diagnostic.help}` : "";
-            comments.push({
-              path: repoPath,
-              line: diagnostic.line,
-              side: "RIGHT",
-              body: `${marker}\n**Vue Doctor** - \`${ruleKey}\` _(${severity})_\n\n${diagnostic.message || ""}${fixLine}`,
-            });
-          }
-          if (comments.length === 0 && diagnostics.length > 0) return;
+          const comments = buildReviewComments(report, files, process.env.INPUT_DIRECTORY);
 
           let priorCommentIds = [];
           try {
@@ -435,9 +381,7 @@ runs:
               pull_number: context.payload.pull_request.number,
               per_page: 100,
             });
-            priorCommentIds = existing
-              .filter((comment) => comment.body && comment.body.startsWith(marker))
-              .map((comment) => comment.id);
+            priorCommentIds = getPriorReviewCommentIds(existing);
           } catch (error) {
             core.warning(`Vue Doctor could not list prior review comments: ${error.message}`);
           }
@@ -474,34 +418,27 @@ runs:
       with:
         github-token: ${{ inputs.github-token || github.token }}
         script: |
-          const fs = require("fs");
+          const {
+            buildCommitStatus,
+            readReport,
+          } = require(`${process.env.GITHUB_ACTION_PATH}/scripts/github-action-feedback.cjs`);
           const reportPath = process.env.REPORT_FILE;
-          if (!reportPath || !fs.existsSync(reportPath) || !process.env.STATUS_SHA) return;
-          let report;
-          try {
-            report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
-          } catch {
-            report = {};
-          }
-          const summary = report.summary || {};
-          const score = summary.score;
-          const errors = Number(summary.errorCount || 0);
-          const warnings = Number(summary.warningCount || 0);
-          const scanFailed = process.env.SCAN_STATUS !== "0";
-          const description = score !== undefined && score !== null
-            ? `Score: ${score}/100 - ${errors} errors - ${warnings} warnings`
-            : scanFailed
-              ? "Scan could not complete"
-              : `${errors} errors - ${warnings} warnings`;
-          const state = context.eventName === "pull_request" && scanFailed ? "failure" : "success";
+          if (!process.env.STATUS_SHA) return;
+          const report = readReport(reportPath) || {};
+          const status = buildCommitStatus({
+            report,
+            scanStatus: process.env.SCAN_STATUS,
+            eventName: context.eventName,
+            runUrl: process.env.RUN_URL,
+          });
           try {
             await github.rest.repos.createCommitStatus({
               ...context.repo,
               sha: process.env.STATUS_SHA,
-              state,
+              state: status.state,
               context: "Vue Doctor",
-              description: description.slice(0, 140),
-              target_url: process.env.RUN_URL,
+              description: status.description,
+              target_url: status.target_url,
             });
           } catch (error) {
             core.warning(`Vue Doctor could not publish commit status: ${error.message}`);

@@ -35,7 +35,7 @@ vue-doctor --verbose
 vue-doctor --json > vue-doctor-report.json
 vue-doctor --markdown > vue-doctor-report.md
 vue-doctor --sarif > vue-doctor.sarif
-vue-doctor --fail-on warning
+vue-doctor --blocking warning
 ```
 
 When you are done testing:
@@ -60,7 +60,7 @@ From your Vue project:
 
 ```powershell
 cd C:\Users\Windows\Desktop\your-vue-project
-npm install -D C:\Users\Windows\Desktop\vue-doctor\.local-pack\rekl0w-vue-doctor-0.3.0.tgz
+npm install -D (Get-ChildItem C:\Users\Windows\Desktop\vue-doctor\.local-pack\rekl0w-vue-doctor-*.tgz | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
 npx vue-doctor --verbose
 ```
 
@@ -78,11 +78,12 @@ vue-doctor --json
 vue-doctor --markdown
 vue-doctor --sarif
 vue-doctor src --include src
-vue-doctor --fail-on none
-vue-doctor --fail-on error
+vue-doctor --blocking none
+vue-doctor --blocking error
 vue-doctor --annotations
-vue-doctor --update-baseline vue-doctor-baseline.json --fail-on none
-vue-doctor --baseline vue-doctor-baseline.json --fail-on warning
+vue-doctor --scope changed --base main --blocking warning
+vue-doctor --update-baseline vue-doctor-baseline.json --blocking none
+vue-doctor --baseline vue-doctor-baseline.json --blocking warning
 ```
 
 ## Expected Output

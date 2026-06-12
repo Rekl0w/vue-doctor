@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1
+
+- Added an interactive post-scan setup prompt so first-run users can add the project script, dependency, GitHub Actions workflow, hooks, and agent skill from the same CLI flow.
+- Added JS/TS config loading with a typed `defineConfig` helper, plus lint and coverage scripts for stronger release verification.
+- Fixed stale inline PR review comments when a later run has diagnostics but no commentable changed lines.
+- Moved GitHub Action feedback logic into a tested helper and refreshed local testing docs for the current `--blocking` and packaged-tarball workflows.
+
 ## 0.5.0
 
 - Added PR-focused scan scopes with `--scope changed`, `--scope lines`, `--scope files`, and `--base` so CI can report introduced diagnostics or changed-line-only diagnostics instead of every pre-existing issue in touched files.

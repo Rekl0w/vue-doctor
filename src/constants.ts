@@ -1,8 +1,17 @@
-export const VERSION = "0.5.0";
+export const VERSION = "0.5.1";
 
 export const PLUGIN_NAME = "vue-doctor";
 
-export const CONFIG_FILENAMES = ["vue-doctor.config.json", ".vue-doctorrc.json"];
+export const CONFIG_FILENAMES = [
+  "vue-doctor.config.ts",
+  "vue-doctor.config.mts",
+  "vue-doctor.config.cts",
+  "vue-doctor.config.js",
+  "vue-doctor.config.mjs",
+  "vue-doctor.config.cjs",
+  "vue-doctor.config.json",
+  ".vue-doctorrc.json",
+];
 
 export const IGNORE_FILENAMES = [
   ".gitignore",

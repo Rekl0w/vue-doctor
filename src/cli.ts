@@ -9,7 +9,6 @@ import { DEFAULT_FAIL_ON, VERSION } from "./constants.js";
 import {
   diagnose,
   summarizeDiagnostics,
-  toJsonReport,
   toJsonReportFromScans,
 } from "./scanner.js";
 import { toMarkdownReport, toSarifReport } from "./reporters.js";
@@ -42,7 +41,7 @@ import { loadConfig, mergeConfig } from "./utils/config.js";
 import { toRelativePath } from "./utils/path.js";
 import { runInstallOnboarding } from "./utils/install-onboarding.js";
 import { runAgentHandoff, type HandoffMode } from "./utils/agent-handoff.js";
-import { maybePrintSetupHint } from "./utils/setup-hint.js";
+import { maybeOfferProjectSetup } from "./utils/setup-hint.js";
 import { canPrompt, promptChoice, runProductStep } from "./utils/terminal.js";
 import { selectProjectDirectories } from "./utils/workspaces.js";
 import { calculateScore } from "./utils/scoring.js";
@@ -149,6 +148,28 @@ const easeOutCubic = (progress: number): number => 1 - (1 - progress) ** 3;
 const shouldAnimateCliOutput = (): boolean =>
   canPrompt() && process.env.VUE_DOCTOR_NO_ANIMATION !== "true";
 
+const printTypeLine = async (message: string, enabled: boolean): Promise<void> => {
+  if (!enabled) return;
+  for (const character of message) {
+    process.stdout.write(character);
+    await sleep(10);
+  }
+  process.stdout.write("\n");
+};
+
+const printOpeningSequence = async (
+  rootDirectory: string,
+  projectCount: number,
+  enabled: boolean,
+): Promise<void> => {
+  if (!enabled) return;
+  const relativeRoot = path.relative(process.cwd(), rootDirectory) || ".";
+  await printTypeLine(`I'll inspect your Vue files in ${relativeRoot}.`, true);
+  await printTypeLine(`Checking templates, scripts, styles, and ${projectCount === 1 ? "one project" : `${projectCount} projects`}.`, true);
+  await sleep(120);
+  console.log("");
+};
+
 const shouldFail = (diagnostics: Diagnostic[], failOn: FailOnLevel): boolean => {
   if (failOn === "none") return false;
   if (failOn === "warning") return diagnostics.length > 0;
@@ -201,6 +222,7 @@ interface RuleConfigTarget {
   root: Record<string, unknown>;
   config: Record<string, unknown>;
   exists: boolean;
+  writable: boolean;
 }
 
 const normalizeCategoryName = (category: string): string =>
@@ -257,10 +279,14 @@ const findRule = (query: string): RuleDefinition | null => {
 
 const readJsonObject = (filePath: string): Record<string, unknown> => {
   if (!existsSync(filePath)) return {};
-  const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as unknown;
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : {};
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
 };
 
 const resolveRuleConfigTarget = (cwd: string | undefined): RuleConfigTarget => {
@@ -268,6 +294,7 @@ const resolveRuleConfigTarget = (cwd: string | undefined): RuleConfigTarget => {
   const loaded = loadConfig(requestedDirectory);
   const sourcePath = loaded.sourcePath ?? path.join(requestedDirectory, "vue-doctor.config.json");
   const isPackageJson = path.basename(sourcePath) === "package.json";
+  const writable = isPackageJson || path.extname(sourcePath) === ".json";
   const root = readJsonObject(sourcePath);
   const embeddedConfig = isPackageJson && root.vueDoctor && typeof root.vueDoctor === "object" && !Array.isArray(root.vueDoctor)
     ? (root.vueDoctor as Record<string, unknown>)
@@ -278,6 +305,7 @@ const resolveRuleConfigTarget = (cwd: string | undefined): RuleConfigTarget => {
     root,
     config: isPackageJson ? embeddedConfig : root,
     exists: existsSync(sourcePath),
+    writable,
   };
 };
 
@@ -298,6 +326,11 @@ const updateRuleConfig = (
   update: (config: Record<string, unknown>) => Record<string, unknown>,
 ): RuleConfigTarget => {
   const target = resolveRuleConfigTarget(flags.cwd);
+  if (!target.writable) {
+    throw new Error(
+      `Cannot update ${target.filePath}. Rule management writes JSON config files only; edit JS/TS configs manually.`,
+    );
+  }
   const nextConfig = update({ ...target.config });
   writeRuleConfigTarget(target, nextConfig);
   return target;
@@ -1105,6 +1138,7 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
 
   if (!quiet) {
     printInspectHeader(mode, flags, projectDirectories.length, parallelWorkers);
+    await printOpeningSequence(rootDirectory, projectDirectories.length, shouldAnimateCliOutput() && !flags.verbose);
   }
 
   if (flags.offline && !quiet) {
@@ -1309,7 +1343,7 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
       mode: resolveHandoffMode(flags) ?? "prompt",
     });
   }
-  if (!quiet && report.project.hasVue) maybePrintSetupHint(rootDirectory);
+  if (!quiet && report.project.hasVue) await maybeOfferProjectSetup(rootDirectory);
 
   process.exitCode = shouldFail(diagnostics, failOn) ? 1 : 0;
 };

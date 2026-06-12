@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createJiti } from "jiti";
 import { CONFIG_FILENAMES } from "../constants.js";
 import type { FailOnLevel, RuleLevel, ScanScope, VueDoctorConfig, VueDoctorPreset } from "../types.js";
 
@@ -17,6 +18,23 @@ const readJsonFile = (filePath: string): Record<string, unknown> | null => {
     const raw = fs.readFileSync(filePath, "utf-8");
     const parsed = JSON.parse(raw);
     return isObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const unwrapConfigModule = (value: unknown): Record<string, unknown> | null => {
+  const candidate = isObject(value) && "default" in value ? value.default : value;
+  return isObject(candidate) ? candidate : null;
+};
+
+const readConfigFile = (filePath: string): Record<string, unknown> | null => {
+  const extension = path.extname(filePath);
+  if (extension === ".json") return readJsonFile(filePath);
+
+  try {
+    const jiti = createJiti(import.meta.url, { interopDefault: true });
+    return unwrapConfigModule(jiti(filePath));
   } catch {
     return null;
   }
@@ -139,7 +157,7 @@ export const loadConfig = (directory: string, explicitConfigPath?: string): Load
   let rawConfig: Record<string, unknown> = {};
 
   if (configPath) {
-    rawConfig = readJsonFile(configPath) ?? {};
+    rawConfig = readConfigFile(configPath) ?? {};
     sourcePath = configPath;
   } else {
     const packageConfig = loadPackageJsonConfig(requestedDirectory);

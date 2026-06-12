@@ -1,6 +1,6 @@
 {
   "name": "@rekl0w/vue-doctor",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Diagnose Vue codebases for security, performance, correctness, accessibility, and architecture issues",
   "keywords": [
     "accessibility",
@@ -58,11 +58,13 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "build:schema": "node scripts/generate-config-schema.mjs",
-    "check": "npm run build:schema && npm run typecheck && npm run build && npm run test",
+    "check": "npm run build:schema && npm run lint && npm run typecheck && npm run build && npm run test",
     "local:link": "npm run build && npm link",
     "local:pack": "node scripts/pack-local.mjs",
     "prepack": "npm run check"
@@ -74,13 +76,18 @@
     "agent-install": "^0.0.5",
     "commander": "^14.0.0",
     "ignore": "^7.0.0",
+    "jiti": "^2.7.0",
     "minimatch": "^10.0.0",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^4.1.8",
+    "eslint": "^10.4.1",
     "tsup": "^8.5.0",
     "typescript": "^5.9.0",
+    "typescript-eslint": "^8.61.0",
     "vitest": "^4.0.0"
   },
   "engines": {

@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const tempRoots: string[] = [];
 const repoRoot = path.resolve(import.meta.dirname, "..");
-const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+const packageVersion = (JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf-8")) as { version: string }).version;
+const ESC = String.fromCharCode(27);
+const ANSI_PATTERN = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, "g");
 
 const stripAnsi = (value: string): string => value.replace(ANSI_PATTERN, "");
 
@@ -87,7 +89,7 @@ afterEach(() => {
 describe("CLI smoke", () => {
   it("prints detailed version information", () => {
     const output = runCli(["version"]);
-    expect(output).toContain("vue-doctor 0.5.0");
+    expect(output).toContain(`vue-doctor ${packageVersion}`);
     expect(output).toContain("node ");
   });
 
@@ -122,11 +124,25 @@ describe("CLI smoke", () => {
     expect(json.summary.totalDiagnosticCount).toBe(1);
   });
 
+  it("loads TypeScript config files", () => {
+    const root = makeProject();
+    fs.writeFileSync(
+      path.join(root, "vue-doctor.config.ts"),
+      "export default { rules: { 'vue-doctor/require-img-alt': 'off' } }\n",
+    );
+
+    const json = JSON.parse(runCli([root, "--json", "--blocking", "none"])) as {
+      summary: { totalDiagnosticCount: number };
+    };
+
+    expect(json.summary.totalDiagnosticCount).toBe(0);
+  });
+
   it("prints a lean human report with verbose source frames", () => {
     const root = makeProject();
     const output = runCli([root, "--verbose", "--fail-on", "none", "--handoff", "skip"]);
 
-    expect(output).toContain("vue-doctor v0.5.0");
+    expect(output).toContain(`vue-doctor v${packageVersion}`);
     expect(output).toContain("Full project - 1 workspace - single-threaded");
     expect(output).toContain("Analyzing Vue source...");
     expect(output).toContain("require-img-alt");
