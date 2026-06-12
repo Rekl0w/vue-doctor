@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Added PR-focused scan scopes with `--scope changed`, `--scope lines`, `--scope files`, and `--base` so CI can report introduced diagnostics or changed-line-only diagnostics instead of every pre-existing issue in touched files.
+- Added `blocking` as the preferred CLI/config/action gate setting while keeping `failOn` and `fail-on` as backwards-compatible aliases.
+- Added `vue-doctor rules` commands for listing, explaining, enabling, disabling, and bulk-updating rules/categories from the CLI.
+- Expanded the GitHub Action with inline PR review comments, commit status publishing, `fixed-issues` output, and matching scope/base handling for JSON, Markdown, and SARIF reports.
+
 ## 0.4.2
 
 - Refined the default human CLI output to use a lean scan header, one-line project stack summary, and React Doctor-style category-only diagnostics.

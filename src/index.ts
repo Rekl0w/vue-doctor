@@ -3,6 +3,7 @@ export { toMarkdownReport, toSarifReport } from "./reporters.js";
 export { rules } from "./rules/index.js";
 export type {
   Diagnostic,
+  ChangedLineRanges,
   DiffInfo,
   DiagnoseOptions,
   DiagnoseResult,
@@ -12,6 +13,7 @@ export type {
   ProjectInfo,
   RuleDefinition,
   RuleLevel,
+  ScanScope,
   ScoreResult,
   Severity,
   VueDoctorConfig,

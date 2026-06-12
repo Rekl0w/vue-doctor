@@ -98,7 +98,7 @@ ${diagnosticsDirectory}
 
 Use diagnostics.json as the source of truth. Fix root causes instead of suppressing rules. Keep changes scoped to the reported Vue issues. After editing, run:
 
-npx @rekl0w/vue-doctor@latest --verbose --fail-on none
+npx @rekl0w/vue-doctor@latest --verbose --blocking none
 
 Then summarize what changed in plain language.`;
 

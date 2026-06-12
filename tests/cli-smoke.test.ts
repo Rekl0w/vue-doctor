@@ -34,6 +34,50 @@ const runCli = (args: string[]): string => {
   return stripAnsi(result.stdout);
 };
 
+const runGit = (root: string, args: string[]): void => {
+  const result = spawnSync("git", args, {
+    cwd: root,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || `git ${args.join(" ")} failed`);
+  }
+};
+
+const makeChangedGitProject = (): string => {
+  const root = makeProject();
+  fs.writeFileSync(
+    path.join(root, "src", "App.vue"),
+    [
+      "<template>",
+      "  <section>",
+      "    <img src=\"/logo.png\">",
+      "    <p>safe</p>",
+      "  </section>",
+      "</template>",
+      "",
+    ].join("\n"),
+  );
+  runGit(root, ["init", "-b", "main"]);
+  runGit(root, ["add", "."]);
+  runGit(root, ["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "initial"]);
+  runGit(root, ["checkout", "-b", "feature"]);
+  fs.writeFileSync(
+    path.join(root, "src", "App.vue"),
+    [
+      "<template>",
+      "  <section>",
+      "    <img src=\"/logo.png\">",
+      "    <p v-html=\"html\"></p>",
+      "  </section>",
+      "</template>",
+      "",
+    ].join("\n"),
+  );
+  return root;
+};
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -43,7 +87,7 @@ afterEach(() => {
 describe("CLI smoke", () => {
   it("prints detailed version information", () => {
     const output = runCli(["version"]);
-    expect(output).toContain("vue-doctor 0.4.2");
+    expect(output).toContain("vue-doctor 0.5.0");
     expect(output).toContain("node ");
   });
 
@@ -67,11 +111,22 @@ describe("CLI smoke", () => {
     expect(sarif.runs[0]?.results[0]?.ruleId).toBe("vue-doctor/require-img-alt");
   });
 
+  it("honors blocking config when no CLI gate flag is passed", () => {
+    const root = makeProject();
+    fs.writeFileSync(path.join(root, "vue-doctor.config.json"), JSON.stringify({ blocking: "none" }));
+
+    const json = JSON.parse(runCli([root, "--json"])) as {
+      summary: { totalDiagnosticCount: number };
+    };
+
+    expect(json.summary.totalDiagnosticCount).toBe(1);
+  });
+
   it("prints a lean human report with verbose source frames", () => {
     const root = makeProject();
     const output = runCli([root, "--verbose", "--fail-on", "none", "--handoff", "skip"]);
 
-    expect(output).toContain("vue-doctor v0.4.2");
+    expect(output).toContain("vue-doctor v0.5.0");
     expect(output).toContain("Full project - 1 workspace - single-threaded");
     expect(output).toContain("Analyzing Vue source...");
     expect(output).toContain("require-img-alt");
@@ -146,6 +201,53 @@ describe("CLI smoke", () => {
 
     expect(json.summary.totalDiagnosticCount).toBe(1);
     expect(json.diagnostics[0]?.rule).toBe("require-img-alt");
+  });
+
+  it("supports changed-line scope for pull request style scans", () => {
+    const root = makeChangedGitProject();
+    const json = JSON.parse(
+      runCli([root, "--json", "--scope", "lines", "--base", "main", "--blocking", "none"]),
+    ) as {
+      mode: string;
+      diagnostics: Array<{ rule: string }>;
+      summary: { totalDiagnosticCount: number };
+    };
+
+    expect(json.mode).toBe("diff");
+    expect(json.summary.totalDiagnosticCount).toBe(1);
+    expect(json.diagnostics.map((diagnostic) => diagnostic.rule)).toEqual(["no-v-html"]);
+  });
+
+  it("supports introduced-issue scope by comparing against the base ref", () => {
+    const root = makeChangedGitProject();
+    const json = JSON.parse(
+      runCli([root, "--json", "--scope", "changed", "--base", "main", "--blocking", "none"]),
+    ) as {
+      mode: string;
+      baseline?: { newCount: number; baseTotalCount: number };
+      diagnostics: Array<{ rule: string }>;
+      summary: { totalDiagnosticCount: number };
+    };
+
+    expect(json.mode).toBe("baseline");
+    expect(json.baseline?.newCount).toBe(1);
+    expect(json.baseline?.baseTotalCount).toBe(1);
+    expect(json.summary.totalDiagnosticCount).toBe(1);
+    expect(json.diagnostics.map((diagnostic) => diagnostic.rule)).toEqual(["no-v-html"]);
+  });
+
+  it("can list and update rule configuration from the rules command", () => {
+    const root = makeProject();
+    const list = JSON.parse(runCli(["rules", "list", "--json", "-c", root])) as Array<{ key: string }>;
+    expect(list.some((rule) => rule.key === "vue-doctor/require-img-alt")).toBe(true);
+
+    const output = runCli(["rules", "disable", "require-img-alt", "-c", root]);
+    expect(output).toContain("vue-doctor/require-img-alt");
+
+    const json = JSON.parse(runCli([root, "--json", "--fail-on", "none"])) as {
+      summary: { totalDiagnosticCount: number };
+    };
+    expect(json.summary.totalDiagnosticCount).toBe(0);
   });
 
   it("previews the expanded install onboarding flow", () => {

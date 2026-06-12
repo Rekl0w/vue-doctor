@@ -14,6 +14,9 @@ inputs:
   project:
     description: "Workspace project(s) to scan (comma-separated)"
     required: false
+  scope:
+    description: "On pull requests, what to scan/report: changed (new issues vs base), files (all issues in changed files), lines (issues on changed lines), or full. Non-PR events always scan the full project."
+    default: "changed"
   diff:
     description: "Base branch for diff mode when not using pull_request changed-file discovery"
     required: false
@@ -22,6 +25,12 @@ inputs:
     default: "true"
   comment:
     description: "Update a sticky Vue Doctor PR comment"
+    default: "true"
+  review-comments:
+    description: "Post inline review comments on changed lines that triggered diagnostics"
+    default: "true"
+  commit-status:
+    description: "Publish a commit status with the score and diagnostic counts"
     default: "true"
   non-blocking:
     description: "Always pass the workflow even when Vue Doctor finds blocking diagnostics"
@@ -62,6 +71,9 @@ inputs:
   fail-on:
     description: "Exit with error code on diagnostics: error, warning, none"
     default: "error"
+  blocking:
+    description: "Severity that fails pull request workflows: none, warning, or error. Overrides fail-on when set."
+    required: false
   offline:
     description: "Accepted for React Doctor parity. Vue Doctor always scores locally."
     default: "false"
@@ -79,6 +91,9 @@ outputs:
   total-issues:
     description: "Total diagnostics count"
     value: ${{ steps.summary.outputs.total-issues }}
+  fixed-issues:
+    description: "Count of diagnostics fixed compared with the PR base"
+    value: ${{ steps.summary.outputs.fixed-issues }}
   error-count:
     description: "Error diagnostics count"
     value: ${{ steps.summary.outputs.error-count }}
@@ -128,24 +143,40 @@ runs:
             core.warning(`Could not list pull request files; Vue Doctor will fall back to diff/full scan. ${error.message}`);
           }
 
+    - id: base
+      if: ${{ github.event_name == 'pull_request' }}
+      shell: bash
+      env:
+        INPUT_DIRECTORY: ${{ inputs.directory }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: |
+        if [ -n "$BASE_SHA" ] && git -C "$INPUT_DIRECTORY" rev-parse --git-dir >/dev/null 2>&1; then
+          git -C "$INPUT_DIRECTORY" fetch --no-tags --depth=1 origin "$BASE_SHA" 2>/dev/null || true
+        fi
+
     - id: scan
       shell: bash
       env:
         INPUT_DIRECTORY: ${{ inputs.directory }}
         INPUT_VERBOSE: ${{ inputs.verbose }}
         INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_SCOPE: ${{ inputs.scope }}
         INPUT_DIFF: ${{ inputs.diff }}
         INPUT_PRESET: ${{ inputs.preset }}
         INPUT_BASELINE: ${{ inputs.baseline }}
         INPUT_UPDATE_BASELINE: ${{ inputs.update-baseline }}
+        INPUT_BLOCKING: ${{ inputs.blocking }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_OFFLINE: ${{ inputs.offline }}
         INPUT_EXPERIMENTAL_PARALLEL: ${{ inputs.experimental-parallel }}
         INPUT_VERSION: ${{ inputs.version }}
         CHANGED_FILES_PATH: ${{ steps.pr-files.outputs.path }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        EVENT_NAME: ${{ github.event_name }}
       run: |
         set +e
-        FLAGS=("--json" "--json-compact" "--fail-on" "$INPUT_FAIL_ON")
+        BLOCKING="${INPUT_BLOCKING:-$INPUT_FAIL_ON}"
+        FLAGS=("--json" "--json-compact" "--blocking" "$BLOCKING")
         if [ "$INPUT_VERBOSE" = "true" ]; then FLAGS+=("--verbose"); fi
         if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
         if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
@@ -153,10 +184,17 @@ runs:
         if [ -n "$INPUT_UPDATE_BASELINE" ]; then FLAGS+=("--update-baseline" "$INPUT_UPDATE_BASELINE"); fi
         if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
         if [ -n "$INPUT_EXPERIMENTAL_PARALLEL" ]; then FLAGS+=("--experimental-parallel" "$INPUT_EXPERIMENTAL_PARALLEL"); fi
-        if [ -n "$CHANGED_FILES_PATH" ] && [ -s "$CHANGED_FILES_PATH" ]; then
+        if [ "$EVENT_NAME" != "pull_request" ]; then
+          FLAGS+=("--scope" "full")
+        elif [ -n "$CHANGED_FILES_PATH" ] && [ -s "$CHANGED_FILES_PATH" ]; then
+          SCOPE="$(printf '%s' "${INPUT_SCOPE:-changed}" | tr '[:upper:]' '[:lower:]')"
+          case "$SCOPE" in files | lines | changed | full) FLAGS+=("--scope" "$SCOPE") ;; *) FLAGS+=("--scope" "changed") ;; esac
           FLAGS+=("--changed-files-from" "$CHANGED_FILES_PATH")
+          if [ -n "$BASE_SHA" ]; then FLAGS+=("--base" "$BASE_SHA"); fi
         elif [ -n "$INPUT_DIFF" ]; then
           FLAGS+=("--diff" "$INPUT_DIFF")
+        else
+          FLAGS+=("--scope" "full")
         fi
 
         REPORT_FILE="${RUNNER_TEMP:-/tmp}/vue-doctor-report-${GITHUB_RUN_ID:-$$}.json"
@@ -207,21 +245,36 @@ runs:
         INPUT_DIRECTORY: ${{ inputs.directory }}
         INPUT_REPORT_PATH: ${{ inputs.markdown-report-path }}
         INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_SCOPE: ${{ inputs.scope }}
+        INPUT_DIFF: ${{ inputs.diff }}
         INPUT_PRESET: ${{ inputs.preset }}
         INPUT_BASELINE: ${{ inputs.baseline }}
         INPUT_OFFLINE: ${{ inputs.offline }}
         INPUT_EXPERIMENTAL_PARALLEL: ${{ inputs.experimental-parallel }}
         INPUT_VERSION: ${{ inputs.version }}
         CHANGED_FILES_PATH: ${{ steps.pr-files.outputs.path }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        EVENT_NAME: ${{ github.event_name }}
       run: |
         mkdir -p "$(dirname "$INPUT_REPORT_PATH")"
-        FLAGS=("--markdown" "--fail-on" "none")
+        FLAGS=("--markdown" "--blocking" "none")
         if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
         if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
         if [ -n "$INPUT_BASELINE" ]; then FLAGS+=("--baseline" "$INPUT_BASELINE"); fi
         if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
         if [ -n "$INPUT_EXPERIMENTAL_PARALLEL" ]; then FLAGS+=("--experimental-parallel" "$INPUT_EXPERIMENTAL_PARALLEL"); fi
-        if [ -n "$CHANGED_FILES_PATH" ] && [ -s "$CHANGED_FILES_PATH" ]; then FLAGS+=("--changed-files-from" "$CHANGED_FILES_PATH"); fi
+        if [ "$EVENT_NAME" != "pull_request" ]; then
+          FLAGS+=("--scope" "full")
+        elif [ -n "$CHANGED_FILES_PATH" ] && [ -s "$CHANGED_FILES_PATH" ]; then
+          SCOPE="$(printf '%s' "${INPUT_SCOPE:-changed}" | tr '[:upper:]' '[:lower:]')"
+          case "$SCOPE" in files | lines | changed | full) FLAGS+=("--scope" "$SCOPE") ;; *) FLAGS+=("--scope" "changed") ;; esac
+          FLAGS+=("--changed-files-from" "$CHANGED_FILES_PATH")
+          if [ -n "$BASE_SHA" ]; then FLAGS+=("--base" "$BASE_SHA"); fi
+        elif [ -n "$INPUT_DIFF" ]; then
+          FLAGS+=("--diff" "$INPUT_DIFF")
+        else
+          FLAGS+=("--scope" "full")
+        fi
         npm exec --yes --package "@rekl0w/vue-doctor@${INPUT_VERSION:-latest}" -- vue-doctor "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$INPUT_REPORT_PATH"
         echo "report-path=$INPUT_REPORT_PATH" >> "$GITHUB_OUTPUT"
 
@@ -232,21 +285,36 @@ runs:
         INPUT_DIRECTORY: ${{ inputs.directory }}
         INPUT_REPORT_PATH: ${{ inputs.sarif-report-path }}
         INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_SCOPE: ${{ inputs.scope }}
+        INPUT_DIFF: ${{ inputs.diff }}
         INPUT_PRESET: ${{ inputs.preset }}
         INPUT_BASELINE: ${{ inputs.baseline }}
         INPUT_OFFLINE: ${{ inputs.offline }}
         INPUT_EXPERIMENTAL_PARALLEL: ${{ inputs.experimental-parallel }}
         INPUT_VERSION: ${{ inputs.version }}
         CHANGED_FILES_PATH: ${{ steps.pr-files.outputs.path }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        EVENT_NAME: ${{ github.event_name }}
       run: |
         mkdir -p "$(dirname "$INPUT_REPORT_PATH")"
-        FLAGS=("--sarif" "--json-compact" "--fail-on" "none")
+        FLAGS=("--sarif" "--json-compact" "--blocking" "none")
         if [ -n "$INPUT_PROJECT" ]; then FLAGS+=("--project" "$INPUT_PROJECT"); fi
         if [ -n "$INPUT_PRESET" ]; then FLAGS+=("--preset" "$INPUT_PRESET"); fi
         if [ -n "$INPUT_BASELINE" ]; then FLAGS+=("--baseline" "$INPUT_BASELINE"); fi
         if [ "$INPUT_OFFLINE" = "true" ]; then FLAGS+=("--offline"); fi
         if [ -n "$INPUT_EXPERIMENTAL_PARALLEL" ]; then FLAGS+=("--experimental-parallel" "$INPUT_EXPERIMENTAL_PARALLEL"); fi
-        if [ -n "$CHANGED_FILES_PATH" ] && [ -s "$CHANGED_FILES_PATH" ]; then FLAGS+=("--changed-files-from" "$CHANGED_FILES_PATH"); fi
+        if [ "$EVENT_NAME" != "pull_request" ]; then
+          FLAGS+=("--scope" "full")
+        elif [ -n "$CHANGED_FILES_PATH" ] && [ -s "$CHANGED_FILES_PATH" ]; then
+          SCOPE="$(printf '%s' "${INPUT_SCOPE:-changed}" | tr '[:upper:]' '[:lower:]')"
+          case "$SCOPE" in files | lines | changed | full) FLAGS+=("--scope" "$SCOPE") ;; *) FLAGS+=("--scope" "changed") ;; esac
+          FLAGS+=("--changed-files-from" "$CHANGED_FILES_PATH")
+          if [ -n "$BASE_SHA" ]; then FLAGS+=("--base" "$BASE_SHA"); fi
+        elif [ -n "$INPUT_DIFF" ]; then
+          FLAGS+=("--diff" "$INPUT_DIFF")
+        else
+          FLAGS+=("--scope" "full")
+        fi
         npm exec --yes --package "@rekl0w/vue-doctor@${INPUT_VERSION:-latest}" -- vue-doctor "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$INPUT_REPORT_PATH"
         echo "report-path=$INPUT_REPORT_PATH" >> "$GITHUB_OUTPUT"
 
@@ -272,6 +340,171 @@ runs:
             await github.rest.issues.updateComment({ ...context.repo, comment_id: prev.id, body });
           } else {
             await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+          }
+
+    - if: ${{ always() && inputs.review-comments == 'true' && github.event_name == 'pull_request' && steps.scan.outputs.report-file != '' }}
+      uses: actions/github-script@v7
+      env:
+        REPORT_FILE: ${{ steps.scan.outputs.report-file }}
+        INPUT_DIRECTORY: ${{ inputs.directory }}
+      with:
+        github-token: ${{ inputs.github-token || github.token }}
+        script: |
+          const fs = require("fs");
+          const reportPath = process.env.REPORT_FILE;
+          if (!reportPath || !fs.existsSync(reportPath)) return;
+          let report;
+          try {
+            report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+          } catch {
+            return;
+          }
+          if (report.ok === false) return;
+
+          const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics : [];
+          const marker = "<!-- vue-doctor:review -->";
+          const directoryPrefix = (process.env.INPUT_DIRECTORY || ".").replace(/^\.\/?/, "").replace(/\/$/, "");
+
+          let files;
+          try {
+            files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+          } catch (error) {
+            core.warning(`Vue Doctor could not list pull request files for review comments: ${error.message}`);
+            return;
+          }
+
+          const commentableLinesByFile = new Map();
+          for (const file of files) {
+            if (!file.patch) continue;
+            const lines = new Set();
+            let newLine = 0;
+            for (const patchLine of file.patch.split("\n")) {
+              const hunk = patchLine.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+              if (hunk) {
+                newLine = Number(hunk[1]);
+                continue;
+              }
+              if (patchLine.startsWith("+") || patchLine.startsWith(" ")) {
+                lines.add(newLine);
+                newLine += 1;
+              }
+            }
+            commentableLinesByFile.set(file.filename, lines);
+          }
+
+          const toRepoPath = (filePath) => {
+            const normalized = String(filePath || "").replace(/\\/g, "/").replace(/^\.\//, "");
+            if (commentableLinesByFile.has(normalized)) return normalized;
+            const prefixed = directoryPrefix ? `${directoryPrefix}/${normalized}` : normalized;
+            if (commentableLinesByFile.has(prefixed)) return prefixed;
+            const suffixMatches = [...commentableLinesByFile.keys()].filter((name) => name.endsWith(`/${normalized}`));
+            return suffixMatches.length === 1 ? suffixMatches[0] : null;
+          };
+
+          const seen = new Set();
+          const comments = [];
+          for (const diagnostic of diagnostics) {
+            if (!diagnostic || typeof diagnostic.line !== "number" || diagnostic.line <= 0) continue;
+            const repoPath = toRepoPath(diagnostic.relativePath || diagnostic.filePath);
+            if (!repoPath) continue;
+            const commentableLines = commentableLinesByFile.get(repoPath);
+            if (!commentableLines || !commentableLines.has(diagnostic.line)) continue;
+            const ruleKey = `${diagnostic.plugin || "vue-doctor"}/${diagnostic.rule || "unknown-rule"}`;
+            const dedupeKey = `${repoPath}:${diagnostic.line}:${ruleKey}`;
+            if (seen.has(dedupeKey)) continue;
+            seen.add(dedupeKey);
+            const severity = diagnostic.severity === "error" ? "error" : "warning";
+            const fixLine = diagnostic.help ? `\n\n**Fix** -> ${diagnostic.help}` : "";
+            comments.push({
+              path: repoPath,
+              line: diagnostic.line,
+              side: "RIGHT",
+              body: `${marker}\n**Vue Doctor** - \`${ruleKey}\` _(${severity})_\n\n${diagnostic.message || ""}${fixLine}`,
+            });
+          }
+          if (comments.length === 0 && diagnostics.length > 0) return;
+
+          let priorCommentIds = [];
+          try {
+            const existing = await github.paginate(github.rest.pulls.listReviewComments, {
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            priorCommentIds = existing
+              .filter((comment) => comment.body && comment.body.startsWith(marker))
+              .map((comment) => comment.id);
+          } catch (error) {
+            core.warning(`Vue Doctor could not list prior review comments: ${error.message}`);
+          }
+
+          if (comments.length > 0) {
+            try {
+              await github.rest.pulls.createReview({
+                ...context.repo,
+                pull_number: context.payload.pull_request.number,
+                event: "COMMENT",
+                comments: comments.slice(0, 50),
+              });
+            } catch (error) {
+              core.warning(`Vue Doctor could not post inline review comments: ${error.message}`);
+              return;
+            }
+          }
+
+          for (const commentId of priorCommentIds) {
+            try {
+              await github.rest.pulls.deleteReviewComment({ ...context.repo, comment_id: commentId });
+            } catch (error) {
+              core.warning(`Vue Doctor could not clear a prior review comment: ${error.message}`);
+            }
+          }
+
+    - if: ${{ always() && inputs.commit-status == 'true' && steps.scan.outputs.report-file != '' }}
+      uses: actions/github-script@v7
+      env:
+        REPORT_FILE: ${{ steps.scan.outputs.report-file }}
+        SCAN_STATUS: ${{ steps.scan.outputs.status }}
+        STATUS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      with:
+        github-token: ${{ inputs.github-token || github.token }}
+        script: |
+          const fs = require("fs");
+          const reportPath = process.env.REPORT_FILE;
+          if (!reportPath || !fs.existsSync(reportPath) || !process.env.STATUS_SHA) return;
+          let report;
+          try {
+            report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+          } catch {
+            report = {};
+          }
+          const summary = report.summary || {};
+          const score = summary.score;
+          const errors = Number(summary.errorCount || 0);
+          const warnings = Number(summary.warningCount || 0);
+          const scanFailed = process.env.SCAN_STATUS !== "0";
+          const description = score !== undefined && score !== null
+            ? `Score: ${score}/100 - ${errors} errors - ${warnings} warnings`
+            : scanFailed
+              ? "Scan could not complete"
+              : `${errors} errors - ${warnings} warnings`;
+          const state = context.eventName === "pull_request" && scanFailed ? "failure" : "success";
+          try {
+            await github.rest.repos.createCommitStatus({
+              ...context.repo,
+              sha: process.env.STATUS_SHA,
+              state,
+              context: "Vue Doctor",
+              description: description.slice(0, 140),
+              target_url: process.env.RUN_URL,
+            });
+          } catch (error) {
+            core.warning(`Vue Doctor could not publish commit status: ${error.message}`);
           }
 
     - if: ${{ always() && inputs.non-blocking == 'true' && steps.scan.outputs.status != '0' }}

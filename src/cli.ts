@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -13,19 +13,32 @@ import {
   toJsonReportFromScans,
 } from "./scanner.js";
 import { toMarkdownReport, toSarifReport } from "./reporters.js";
+import { normalizeRuleName, rules } from "./rules/index.js";
 import type {
   Diagnostic,
+  ChangedLineRanges,
   DiffInfo,
   DiagnoseResult,
   FailOnLevel,
   JsonReport,
   JsonReportMode,
+  RuleDefinition,
+  RuleLevel,
+  ScanScope,
   ScoreResult,
   VueDoctorConfig,
   VueDoctorPreset,
 } from "./types.js";
-import { getDiffInfo, getStagedSourceFiles, filterSourceFiles, readChangedFilesFromFile } from "./utils/git.js";
-import { loadConfig } from "./utils/config.js";
+import {
+  getChangedLineRanges,
+  getDiffInfo,
+  getMergeBase,
+  getStagedSourceFiles,
+  filterSourceFiles,
+  readChangedFilesFromFile,
+  readGitFileAtRef,
+} from "./utils/git.js";
+import { loadConfig, mergeConfig } from "./utils/config.js";
 import { toRelativePath } from "./utils/path.js";
 import { runInstallOnboarding } from "./utils/install-onboarding.js";
 import { runAgentHandoff, type HandoffMode } from "./utils/agent-handoff.js";
@@ -48,9 +61,12 @@ interface CliFlags {
   full?: boolean;
   staged?: boolean;
   offline?: boolean;
+  scope?: string;
+  base?: string;
   diff?: boolean | string;
   changedFilesFrom?: string;
   project?: string;
+  blocking?: string;
   failOn?: string;
   preset?: string;
   baseline?: string;
@@ -82,6 +98,7 @@ interface CompletedScan {
 }
 
 const VALID_FAIL_ON_LEVELS = new Set<FailOnLevel>(["error", "warning", "none"]);
+const VALID_SCOPES = new Set<ScanScope>(["full", "files", "changed", "lines"]);
 const VALID_PRESETS = new Set<VueDoctorPreset>(["recommended", "strict", "design"]);
 const VALID_HANDOFF_MODES = new Set<HandoffMode>(["prompt", "copy", "print", "codex", "claude", "cursor", "skip"]);
 const SCORE_BAR_WIDTH = 44;
@@ -138,13 +155,271 @@ const shouldFail = (diagnostics: Diagnostic[], failOn: FailOnLevel): boolean => 
   return diagnostics.some((diagnostic) => diagnostic.severity === "error");
 };
 
-const resolveFailOn = (value: string | undefined): FailOnLevel =>
-  VALID_FAIL_ON_LEVELS.has(value as FailOnLevel) ? (value as FailOnLevel) : DEFAULT_FAIL_ON;
+const resolveFailOn = (value: string | undefined, label: string): FailOnLevel | undefined => {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (VALID_FAIL_ON_LEVELS.has(normalized as FailOnLevel)) return normalized as FailOnLevel;
+  throw new Error(`${label} "${value}" is not supported. Use error, warning, or none.`);
+};
+
+const resolveBlocking = (flags: CliFlags, config: VueDoctorConfig): FailOnLevel =>
+  resolveFailOn(flags.blocking, "Blocking level") ??
+  resolveFailOn(flags.failOn, "Fail-on level") ??
+  config.blocking ??
+  config.failOn ??
+  DEFAULT_FAIL_ON;
+
+const resolveScopeValue = (value: string | undefined): ScanScope | undefined => {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (VALID_SCOPES.has(normalized as ScanScope)) return normalized as ScanScope;
+  throw new Error(`Scope "${value}" is not supported. Use full, files, changed, or lines.`);
+};
 
 const resolvePreset = (value: string | undefined): VueDoctorPreset | undefined => {
   if (value === undefined) return undefined;
   if (VALID_PRESETS.has(value as VueDoctorPreset)) return value as VueDoctorPreset;
   throw new Error(`Preset "${value}" is not supported. Use recommended, strict, or design.`);
+};
+
+interface RulesFlags {
+  cwd?: string;
+  json?: boolean;
+  category?: string;
+  configured?: boolean;
+  severity?: string;
+}
+
+interface EffectiveRuleLevel {
+  level: RuleLevel;
+  source: "rule" | "category" | "preset" | "default";
+}
+
+interface RuleConfigTarget {
+  filePath: string;
+  isPackageJson: boolean;
+  root: Record<string, unknown>;
+  config: Record<string, unknown>;
+  exists: boolean;
+}
+
+const normalizeCategoryName = (category: string): string =>
+  category.toLowerCase().replace(/[\s_-]+/g, "-");
+
+const ruleKey = (rule: RuleDefinition): string => `vue-doctor/${rule.name}`;
+
+const parseRuleLevel = (value: string | undefined): RuleLevel | null => {
+  if (value === "error" || value === "warning" || value === "off") return value;
+  if (value === "warn") return "warning";
+  return null;
+};
+
+const formatRuleLevel = (level: RuleLevel): string => (level === "warning" ? "warn" : level);
+
+const getConfiguredCategoryLevel = (
+  config: VueDoctorConfig,
+  category: string,
+): RuleLevel | undefined => {
+  const normalized = normalizeCategoryName(category);
+  for (const [configuredCategory, level] of Object.entries(config.categories ?? {})) {
+    if (normalizeCategoryName(configuredCategory) === normalized) return level;
+  }
+  return undefined;
+};
+
+const resolveEffectiveRuleLevel = (
+  config: VueDoctorConfig,
+  rule: RuleDefinition,
+): EffectiveRuleLevel => {
+  const configuredRuleLevel = config.rules?.[rule.name] ?? config.rules?.[ruleKey(rule)];
+  if (configuredRuleLevel) return { level: configuredRuleLevel, source: "rule" };
+
+  const categoryLevel = getConfiguredCategoryLevel(config, rule.category);
+  if (categoryLevel) return { level: categoryLevel, source: "category" };
+
+  if (config.preset === "strict" && rule.defaultSeverity === "warning") {
+    return { level: "error", source: "preset" };
+  }
+  if (
+    config.preset === "design" &&
+    !["Security", "Correctness", "Accessibility", "Design"].includes(rule.category)
+  ) {
+    return { level: "off", source: "preset" };
+  }
+
+  return { level: rule.defaultSeverity, source: "default" };
+};
+
+const findRule = (query: string): RuleDefinition | null => {
+  const normalized = normalizeRuleName(query);
+  return rules.find((rule) => rule.name === normalized) ?? null;
+};
+
+const readJsonObject = (filePath: string): Record<string, unknown> => {
+  if (!existsSync(filePath)) return {};
+  const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as unknown;
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
+};
+
+const resolveRuleConfigTarget = (cwd: string | undefined): RuleConfigTarget => {
+  const requestedDirectory = path.resolve(cwd ?? process.cwd());
+  const loaded = loadConfig(requestedDirectory);
+  const sourcePath = loaded.sourcePath ?? path.join(requestedDirectory, "vue-doctor.config.json");
+  const isPackageJson = path.basename(sourcePath) === "package.json";
+  const root = readJsonObject(sourcePath);
+  const embeddedConfig = isPackageJson && root.vueDoctor && typeof root.vueDoctor === "object" && !Array.isArray(root.vueDoctor)
+    ? (root.vueDoctor as Record<string, unknown>)
+    : {};
+  return {
+    filePath: sourcePath,
+    isPackageJson,
+    root,
+    config: isPackageJson ? embeddedConfig : root,
+    exists: existsSync(sourcePath),
+  };
+};
+
+const writeRuleConfigTarget = (target: RuleConfigTarget, config: Record<string, unknown>): void => {
+  mkdirSync(path.dirname(target.filePath), { recursive: true });
+  const root = target.isPackageJson ? { ...target.root, vueDoctor: config } : config;
+  writeFileSync(target.filePath, `${JSON.stringify(root, null, 2)}\n`);
+};
+
+const describeRuleConfigTarget = (target: RuleConfigTarget): string => {
+  const relative = path.relative(process.cwd(), target.filePath);
+  const display = relative && !relative.startsWith("..") ? relative : target.filePath;
+  return target.exists ? display : `${display} (created)`;
+};
+
+const updateRuleConfig = (
+  flags: RulesFlags,
+  update: (config: Record<string, unknown>) => Record<string, unknown>,
+): RuleConfigTarget => {
+  const target = resolveRuleConfigTarget(flags.cwd);
+  const nextConfig = update({ ...target.config });
+  writeRuleConfigTarget(target, nextConfig);
+  return target;
+};
+
+const runRulesList = async (flags: RulesFlags): Promise<void> => {
+  const loaded = loadConfig(path.resolve(flags.cwd ?? process.cwd()));
+  const categoryFilter = flags.category ? normalizeCategoryName(flags.category) : null;
+  const rows = rules
+    .filter((rule) => !categoryFilter || normalizeCategoryName(rule.category) === categoryFilter)
+    .map((rule) => ({ rule, effective: resolveEffectiveRuleLevel(loaded.config, rule) }))
+    .filter(({ effective }) => !flags.configured || effective.source !== "default");
+
+  if (flags.json) {
+    console.log(JSON.stringify(rows.map(({ rule, effective }) => ({
+      key: ruleKey(rule),
+      name: rule.name,
+      category: rule.category,
+      defaultSeverity: rule.defaultSeverity,
+      severity: effective.level,
+      source: effective.source,
+      description: rule.description,
+    })), null, 2));
+    return;
+  }
+
+  console.log(pc.bold("Vue Doctor rules"));
+  for (const { rule, effective } of rows) {
+    const source = effective.source === "default" ? "" : pc.dim(` (${effective.source})`);
+    console.log(
+      `${pc.cyan(ruleKey(rule)).padEnd(45)} ${formatRuleLevel(effective.level).padEnd(7)} ${pc.dim(rule.category)}${source}`,
+    );
+  }
+};
+
+const runRulesExplain = async (ruleQuery: string, flags: RulesFlags): Promise<void> => {
+  const rule = findRule(ruleQuery);
+  if (!rule) throw new Error(`Unknown rule "${ruleQuery}". Run vue-doctor rules list.`);
+  const loaded = loadConfig(path.resolve(flags.cwd ?? process.cwd()));
+  const effective = resolveEffectiveRuleLevel(loaded.config, rule);
+
+  if (flags.json) {
+    console.log(JSON.stringify({
+      key: ruleKey(rule),
+      name: rule.name,
+      category: rule.category,
+      defaultSeverity: rule.defaultSeverity,
+      severity: effective.level,
+      source: effective.source,
+      description: rule.description,
+    }, null, 2));
+    return;
+  }
+
+  console.log(pc.bold(ruleKey(rule)));
+  console.log(`${pc.dim("Category:")} ${rule.category}`);
+  console.log(`${pc.dim("Default:")} ${formatRuleLevel(rule.defaultSeverity)}`);
+  console.log(`${pc.dim("Current:")} ${formatRuleLevel(effective.level)}${effective.source === "default" ? "" : ` (${effective.source})`}`);
+  console.log("");
+  console.log(rule.description);
+  console.log("");
+  console.log(pc.dim(`Configure with: vue-doctor rules set ${ruleKey(rule)} <error|warn|off>`));
+};
+
+const setRuleLevel = (config: Record<string, unknown>, key: string, level: RuleLevel): Record<string, unknown> => ({
+  ...config,
+  rules: {
+    ...((config.rules && typeof config.rules === "object" && !Array.isArray(config.rules)) ? config.rules : {}),
+    [key]: level,
+  },
+});
+
+const setCategoryLevel = (config: Record<string, unknown>, category: string, level: RuleLevel): Record<string, unknown> => ({
+  ...config,
+  categories: {
+    ...((config.categories && typeof config.categories === "object" && !Array.isArray(config.categories)) ? config.categories : {}),
+    [category]: level,
+  },
+});
+
+const runRulesSet = async (
+  ruleQuery: string,
+  levelValue: string,
+  flags: RulesFlags,
+): Promise<void> => {
+  const rule = findRule(ruleQuery);
+  if (!rule) throw new Error(`Unknown rule "${ruleQuery}". Run vue-doctor rules list.`);
+  const level = parseRuleLevel(levelValue);
+  if (!level) throw new Error(`Invalid severity "${levelValue}". Use error, warn, warning, or off.`);
+  const target = updateRuleConfig(flags, (config) => setRuleLevel(config, ruleKey(rule), level));
+  console.log(`Set ${ruleKey(rule)} -> ${formatRuleLevel(level)}`);
+  console.log(pc.dim(`Updated ${describeRuleConfigTarget(target)}`));
+};
+
+const runRulesEnable = async (ruleQuery: string, flags: RulesFlags): Promise<void> => {
+  const rule = findRule(ruleQuery);
+  if (!rule) throw new Error(`Unknown rule "${ruleQuery}". Run vue-doctor rules list.`);
+  const level = flags.severity ? parseRuleLevel(flags.severity) : rule.defaultSeverity;
+  if (!level || level === "off") throw new Error("Enable severity must be error, warn, or warning.");
+  const target = updateRuleConfig(flags, (config) => setRuleLevel(config, ruleKey(rule), level));
+  console.log(`Enabled ${ruleKey(rule)} -> ${formatRuleLevel(level)}`);
+  console.log(pc.dim(`Updated ${describeRuleConfigTarget(target)}`));
+};
+
+const runRulesDisable = async (ruleQuery: string, flags: RulesFlags): Promise<void> => {
+  await runRulesSet(ruleQuery, "off", flags);
+};
+
+const runRulesCategory = async (
+  categoryQuery: string,
+  levelValue: string,
+  flags: RulesFlags,
+): Promise<void> => {
+  const category = [...new Set(rules.map((rule) => rule.category))].find(
+    (candidate) => normalizeCategoryName(candidate) === normalizeCategoryName(categoryQuery),
+  );
+  if (!category) throw new Error(`Unknown category "${categoryQuery}". Run vue-doctor rules list.`);
+  const level = parseRuleLevel(levelValue);
+  if (!level) throw new Error(`Invalid severity "${levelValue}". Use error, warn, warning, or off.`);
+  const target = updateRuleConfig(flags, (config) => setCategoryLevel(config, category, level));
+  console.log(`Set category ${category} -> ${formatRuleLevel(level)}`);
+  console.log(pc.dim(`Updated ${describeRuleConfigTarget(target)}`));
 };
 
 const resolveHandoffMode = (flags: CliFlags): HandoffMode | undefined => {
@@ -172,6 +447,122 @@ const filterScanByBaseline = (scan: CompletedScan, baselineKeys: Set<string>): C
       }),
     },
   };
+};
+
+const normalizeRelativePath = (filePath: string): string =>
+  filePath.replaceAll("\\", "/").replace(/^\.\//, "");
+
+const createMovedDiagnosticKey = (diagnostic: Diagnostic): string =>
+  [
+    normalizeRelativePath(diagnostic.relativePath),
+    diagnostic.rule,
+    diagnostic.message,
+  ].join("\0");
+
+const withFilteredDiagnostics = (
+  scan: CompletedScan,
+  diagnostics: Diagnostic[],
+): CompletedScan => ({
+  directory: scan.directory,
+  result: {
+    ...scan.result,
+    diagnostics,
+    score: calculateScore(diagnostics, {
+      totalSourceFiles: scan.result.project.sourceFileCount,
+    }),
+  },
+});
+
+const filterScanByChangedLineRanges = (
+  scan: CompletedScan,
+  changedLineRanges: ChangedLineRanges[] | null,
+): CompletedScan => {
+  if (!changedLineRanges || changedLineRanges.length === 0) return scan;
+  const rangesByFile = new Map(
+    changedLineRanges.map((entry) => [normalizeRelativePath(entry.file), entry.ranges]),
+  );
+  const diagnostics = scan.result.diagnostics.filter((diagnostic) => {
+    const ranges = rangesByFile.get(normalizeRelativePath(diagnostic.relativePath));
+    return ranges?.some(([start, end]) => diagnostic.line >= start && diagnostic.line <= end) ?? false;
+  });
+  return withFilteredDiagnostics(scan, diagnostics);
+};
+
+const filterScanByBaseDiagnostics = (
+  headScan: CompletedScan,
+  baseDiagnostics: Diagnostic[],
+): { scan: CompletedScan; fixedCount: number; baseTotalCount: number } => {
+  const baseKeys = new Set(baseDiagnostics.map(createMovedDiagnosticKey));
+  const headKeys = new Set(headScan.result.diagnostics.map(createMovedDiagnosticKey));
+  const diagnostics = headScan.result.diagnostics.filter(
+    (diagnostic) => !baseKeys.has(createMovedDiagnosticKey(diagnostic)),
+  );
+  const fixedCount = baseDiagnostics.filter(
+    (diagnostic) => !headKeys.has(createMovedDiagnosticKey(diagnostic)),
+  ).length;
+  return {
+    scan: withFilteredDiagnostics(headScan, diagnostics),
+    fixedCount,
+    baseTotalCount: baseDiagnostics.length,
+  };
+};
+
+const writeSnapshotFile = (rootDirectory: string, relativePath: string, content: string): void => {
+  const filePath = path.join(rootDirectory, relativePath);
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, content);
+};
+
+const copyCurrentProjectFile = (
+  projectDirectory: string,
+  snapshotDirectory: string,
+  relativePath: string,
+): void => {
+  const sourcePath = path.join(projectDirectory, relativePath);
+  if (!existsSync(sourcePath)) return;
+  writeSnapshotFile(snapshotDirectory, relativePath, readFileSync(sourcePath, "utf-8"));
+};
+
+const diagnoseBaseSnapshot = async (
+  projectDirectory: string,
+  baseRef: string,
+  includePaths: string[],
+  flags: CliFlags,
+  loadedConfig: VueDoctorConfig,
+  configOverride?: VueDoctorConfig,
+): Promise<Diagnostic[]> => {
+  const snapshotDirectory = mkdtempSync(path.join(tmpdir(), "vue-doctor-base-"));
+  try {
+    copyCurrentProjectFile(projectDirectory, snapshotDirectory, "package.json");
+    const baseIncludePaths: string[] = [];
+    for (const includePath of includePaths) {
+      const source = readGitFileAtRef(projectDirectory, baseRef, includePath);
+      if (source === null) continue;
+      writeSnapshotFile(snapshotDirectory, includePath, source);
+      baseIncludePaths.push(includePath);
+    }
+    if (baseIncludePaths.length === 0) return [];
+
+    const snapshotConfig = mergeConfig(
+      {
+        ...loadedConfig,
+        rootDir: undefined,
+        baseline: undefined,
+        diff: false,
+        scope: "full",
+      },
+      configOverride,
+    );
+    const baseResult = await diagnose(snapshotDirectory, {
+      config: snapshotConfig,
+      includePaths: baseIncludePaths,
+      respectInlineDisables: resolveRespectInlineDisables(flags),
+      parallelWorkers: resolveParallelWorkers(flags),
+    });
+    return baseResult.diagnostics;
+  } finally {
+    rmSync(snapshotDirectory, { recursive: true, force: true });
+  }
 };
 
 const buildScoreLines = (score: ScoreResult, displayScore = score.score): string[] => {
@@ -369,6 +760,7 @@ const formatScanMode = (mode: JsonReportMode): string => {
     diff: "Changed files",
     staged: "Staged files",
     "changed-files": "Changed-file list",
+    baseline: "Introduced issues",
   };
   return labels[mode];
 };
@@ -479,6 +871,28 @@ const resolveDiffValue = (flags: CliFlags, configDiff: boolean | string | undefi
   return coerceDiffValue(flags.diff ?? configDiff);
 };
 
+const resolveScanScope = (flags: CliFlags, config: VueDoctorConfig): ScanScope => {
+  if (flags.full) return "full";
+  const flagScope = resolveScopeValue(flags.scope);
+  if (flagScope) return flagScope;
+  if (config.scope) return config.scope;
+
+  const diffValue = resolveDiffValue(flags, config.diff);
+  if (diffValue === false) return "full";
+  if (diffValue !== undefined) return "changed";
+  if (flags.changedFilesFrom) return "changed";
+  return "full";
+};
+
+const resolveBaseRef = (flags: CliFlags, config: VueDoctorConfig): string | undefined => {
+  if (flags.base && flags.base.trim().length > 0) return flags.base.trim();
+  if (config.base && config.base.trim().length > 0) return config.base.trim();
+  const diffValue = resolveDiffValue(flags, config.diff);
+  if (typeof diffValue === "string") return diffValue;
+  const envBase = process.env.VUE_DOCTOR_BASE_SHA ?? process.env.VUE_DOCTOR_BASE_REF;
+  return envBase && envBase.trim().length > 0 ? envBase.trim() : undefined;
+};
+
 const getWorstScore = (scans: CompletedScan[]): ScoreResult => {
   if (scans.length === 0) return { score: 100, label: "Great" };
   return scans
@@ -494,12 +908,15 @@ type InteractiveScanChoice = "changed" | "staged" | "full";
 const hasExplicitScanMode = (
   flags: CliFlags,
   configDiff: boolean | string | undefined,
+  configScope: ScanScope | undefined,
 ): boolean =>
   Boolean(
     flags.full ||
     flags.staged ||
+    flags.scope !== undefined ||
     flags.diff !== undefined ||
     flags.changedFilesFrom ||
+    configScope !== undefined ||
     configDiff !== undefined ||
     (flags.include && flags.include.length > 0),
   );
@@ -508,9 +925,10 @@ const applyInteractiveScanMode = async (
   rootDirectory: string,
   flags: CliFlags,
   configDiff: boolean | string | undefined,
+  configScope: ScanScope | undefined,
   quiet: boolean,
 ): Promise<void> => {
-  if (quiet || flags.yes || !canPrompt() || hasExplicitScanMode(flags, configDiff)) return;
+  if (quiet || flags.yes || !canPrompt() || hasExplicitScanMode(flags, configDiff, configScope)) return;
 
   const choices: Array<{ value: InteractiveScanChoice; label: string; hint?: string }> = [];
   let defaultValue: InteractiveScanChoice = "full";
@@ -547,7 +965,7 @@ const applyInteractiveScanMode = async (
   if (choices.length <= 1) return;
 
   const selected = await promptChoice("What should Vue Doctor scan?", choices, defaultValue);
-  if (selected === "changed") flags.diff = true;
+  if (selected === "changed") flags.scope = "changed";
   if (selected === "staged") flags.staged = true;
   if (selected === "full") flags.full = true;
 };
@@ -650,7 +1068,7 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
   const start = performance.now();
   const loaded = loadConfig(requestedDirectory, flags.config);
   const rootDirectory = loaded.rootDirectory;
-  const failOn = resolveFailOn(flags.failOn ?? loaded.config.failOn);
+  const failOn = resolveBlocking(flags, loaded.config);
   const preset = resolvePreset(flags.preset ?? loaded.config.preset);
   const configOverride: VueDoctorConfig | undefined = preset ? { preset } : undefined;
   const baselinePath = resolveOptionalPath(rootDirectory, flags.baseline ?? loaded.config.baseline);
@@ -663,24 +1081,27 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
   }
 
   const quiet = Boolean(flags.json || flags.markdown || flags.sarif || flags.score || flags.annotations);
-  await applyInteractiveScanMode(rootDirectory, flags, loaded.config.diff, quiet);
+  await applyInteractiveScanMode(rootDirectory, flags, loaded.config.diff, loaded.config.scope, quiet);
   const projectDirectories = selectProjectDirectories(rootDirectory, flags.project, Boolean(flags.yes));
-  const diffValue = resolveDiffValue(flags, loaded.config.diff);
+  const scope = resolveScanScope(flags, loaded.config);
+  const explicitBase = resolveBaseRef(flags, loaded.config);
   const parallelWorkers = resolveParallelWorkers(flags);
   const changedFilesFromPath = flags.changedFilesFrom
     ? path.resolve(rootDirectory, flags.changedFilesFrom)
     : undefined;
   const changedFilesFrom = changedFilesFromPath ? readChangedFilesFromFile(changedFilesFromPath) : [];
-  const mode: JsonReportMode = flags.staged
+  let mode: JsonReportMode = flags.staged
     ? "staged"
     : changedFilesFromPath
       ? "changed-files"
-      : diffValue !== undefined && diffValue !== false
+      : scope !== "full"
         ? "diff"
         : "full";
-  const explicitBase = typeof diffValue === "string" ? diffValue : undefined;
   let scans: CompletedScan[] = [];
   let reportDiff: DiffInfo | null = null;
+  let baselineBaseRef: string | null = null;
+  let baselineFixedCount = 0;
+  let baselineBaseTotalCount = 0;
 
   if (!quiet) {
     printInspectHeader(mode, flags, projectDirectories.length, parallelWorkers);
@@ -693,6 +1114,8 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
 
   for (const projectDirectory of projectDirectories) {
     let includePaths = flags.include && flags.include.length > 0 ? flags.include : undefined;
+    let changedLineRanges: ChangedLineRanges[] | null = null;
+    let baseRefForComparison: string | undefined;
 
     if (flags.staged) {
       const stagedFiles = getStagedSourceFiles(projectDirectory);
@@ -700,14 +1123,22 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
         continue;
       }
       includePaths = stagedFiles;
+      if (scope === "lines") {
+        changedLineRanges = getChangedLineRanges(projectDirectory, {
+          cached: true,
+          files: stagedFiles,
+        });
+      }
     } else if (changedFilesFromPath) {
       const projectChangedFiles = filterSourceFiles(
         filterChangedFilesForProject(rootDirectory, projectDirectory, changedFilesFrom),
       );
+      const comparisonBase = explicitBase ? (getMergeBase(projectDirectory, explicitBase) ?? explicitBase) : undefined;
       if (projectDirectory === projectDirectories[0]) {
         reportDiff = {
           currentBranch: "HEAD",
-          baseBranch: changedFilesFromPath,
+          baseBranch: explicitBase ?? changedFilesFromPath,
+          baseRef: comparisonBase,
           changedFiles: changedFilesFrom,
         };
       }
@@ -716,11 +1147,18 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
         continue;
       }
       includePaths = projectChangedFiles;
+      baseRefForComparison = comparisonBase;
+      if (scope === "lines" && comparisonBase) {
+        changedLineRanges = getChangedLineRanges(projectDirectory, {
+          baseRef: comparisonBase,
+          files: projectChangedFiles,
+        });
+      }
       if (!quiet) {
         console.log(`Scanning changed files from ${changedFilesFromPath}.`);
         console.log("");
       }
-    } else if (mode === "diff") {
+    } else if (scope !== "full") {
       const diffInfo = getDiffInfo(projectDirectory, explicitBase);
       if (projectDirectory === projectDirectories[0]) reportDiff = diffInfo;
       if (diffInfo) {
@@ -730,6 +1168,13 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
           continue;
         }
         includePaths = changedSourceFiles;
+        baseRefForComparison = diffInfo.baseRef;
+        if (scope === "lines" && diffInfo.baseRef) {
+          changedLineRanges = getChangedLineRanges(projectDirectory, {
+            baseRef: diffInfo.baseRef,
+            files: changedSourceFiles,
+          });
+        }
         if (!quiet) {
           if (diffInfo.isCurrentChanges) {
             console.log("Scanning uncommitted changes.");
@@ -759,8 +1204,28 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
           () => diagnose(projectDirectory, diagnoseOptions),
           (scanResult) =>
             `${formatSourceFileCount(scanResult.project.sourceFileCount)}, ${formatIssueCount(scanResult.diagnostics.length)}`,
-        );
+          );
     scans.push({ directory: projectDirectory, result });
+    const scanIndex = scans.length - 1;
+    const headScan = scans[scanIndex]!;
+    if (scope === "lines") {
+      scans[scanIndex] = filterScanByChangedLineRanges(headScan, changedLineRanges);
+    } else if (scope === "changed" && baseRefForComparison && includePaths && includePaths.length > 0) {
+      const baseDiagnostics = await diagnoseBaseSnapshot(
+        projectDirectory,
+        baseRefForComparison,
+        includePaths,
+        flags,
+        loaded.config,
+        configOverride,
+      );
+      const filtered = filterScanByBaseDiagnostics(headScan, baseDiagnostics);
+      scans[scanIndex] = filtered.scan;
+      baselineBaseRef = baseRefForComparison;
+      baselineFixedCount += filtered.fixedCount;
+      baselineBaseTotalCount += filtered.baseTotalCount;
+      mode = "baseline";
+    }
   }
 
   const rawDiagnostics = getAllDiagnostics(scans);
@@ -779,7 +1244,15 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
 
   const report = toJsonReportFromScans(rootDirectory, scans, {
     mode,
-    diff: mode === "diff" || mode === "changed-files" ? reportDiff : null,
+    diff: mode === "diff" || mode === "changed-files" || mode === "baseline" ? reportDiff : null,
+    baseline: baselineBaseRef
+      ? {
+          baseRef: baselineBaseRef,
+          newCount: getAllDiagnostics(scans).length,
+          fixedCount: baselineFixedCount,
+          baseTotalCount: baselineBaseTotalCount,
+        }
+      : undefined,
     elapsedMilliseconds: performance.now() - start,
   });
   const diagnostics = getAllDiagnostics(scans);
@@ -870,12 +1343,15 @@ export const runCli = async (argv = process.argv): Promise<void> => {
     .option("-y, --yes", "skip prompts and scan all detected workspace projects", false)
     .option("--full", "force a full scan and ignore config diff / --diff", false)
     .option("--project <name>", "workspace project(s) to scan; repeat by comma-separating names")
-    .option("--diff [base]", "scan files changed vs base branch; pass false to disable")
+    .option("--scope <value>", "scan/report scope: full, files, changed, or lines")
+    .option("--base <ref>", "base git ref for files, changed, and lines scopes")
+    .option("--diff [base]", "deprecated alias for --scope changed; pass false to disable")
     .option("--changed-files-from <path>", "scan source files listed in a newline, NUL, or JSON file")
     .option("--staged", "scan staged git files", false)
     .option("--offline", "accepted for React Doctor parity; Vue Doctor always scores locally", false)
     .option("--experimental-parallel [workers]", "scan files in worker threads; defaults to 4 workers")
-    .option("--fail-on <level>", "exit with error on diagnostics: error, warning, none", DEFAULT_FAIL_ON)
+    .option("--blocking <level>", "severity that exits non-zero: error, warning, none")
+    .option("--fail-on <level>", "deprecated alias for --blocking <level>")
     .option("--preset <name>", "rule preset: recommended, strict, design")
     .option("--baseline <path>", "ignore diagnostics already present in a baseline file")
     .option("--update-baseline <path>", "write the current diagnostics to a baseline file")
@@ -913,6 +1389,51 @@ export const runCli = async (argv = process.argv): Promise<void> => {
       console.log(`node ${process.version}`);
       console.log(`${process.platform} ${process.arch}`);
     });
+
+  const rulesCommand = program
+    .command("rules")
+    .description("List, explain, and configure Vue Doctor rules");
+
+  rulesCommand
+    .command("list")
+    .description("List rules and their effective severity")
+    .option("--category <name>", "only show one category")
+    .option("--configured", "only show rules changed by config or preset", false)
+    .option("--json", "output a structured JSON array", false)
+    .option("-c, --cwd <cwd>", "working directory", process.cwd())
+    .action((_options, command) => runRulesList(command.optsWithGlobals()));
+
+  rulesCommand
+    .command("explain <rule>")
+    .description("Explain one rule and how it is configured")
+    .option("--json", "output a structured JSON object", false)
+    .option("-c, --cwd <cwd>", "working directory", process.cwd())
+    .action((rule, _options, command) => runRulesExplain(rule, command.optsWithGlobals()));
+
+  rulesCommand
+    .command("set <rule> <severity>")
+    .description("Set a rule severity: error, warn, warning, or off")
+    .option("-c, --cwd <cwd>", "working directory", process.cwd())
+    .action((rule, severity, _options, command) => runRulesSet(rule, severity, command.optsWithGlobals()));
+
+  rulesCommand
+    .command("enable <rule>")
+    .description("Enable a rule at its default severity, or pass --severity")
+    .option("--severity <level>", "severity to enable at: error, warn, or warning")
+    .option("-c, --cwd <cwd>", "working directory", process.cwd())
+    .action((rule, _options, command) => runRulesEnable(rule, command.optsWithGlobals()));
+
+  rulesCommand
+    .command("disable <rule>")
+    .description("Disable a rule")
+    .option("-c, --cwd <cwd>", "working directory", process.cwd())
+    .action((rule, _options, command) => runRulesDisable(rule, command.optsWithGlobals()));
+
+  rulesCommand
+    .command("category <category> <severity>")
+    .description("Set a whole category severity: error, warn, warning, or off")
+    .option("-c, --cwd <cwd>", "working directory", process.cwd())
+    .action((category, severity, _options, command) => runRulesCategory(category, severity, command.optsWithGlobals()));
 
   process.stdout.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "EPIPE") process.exit(0);

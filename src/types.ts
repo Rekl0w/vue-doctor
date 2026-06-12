@@ -6,6 +6,8 @@ export type RuleLevel = Severity | "off";
 
 export type VueDoctorPreset = "recommended" | "strict" | "design";
 
+export type ScanScope = "full" | "files" | "changed" | "lines";
+
 export type DiagnosticCategory =
   | "Security"
   | "Correctness"
@@ -57,7 +59,10 @@ export interface VueDoctorConfig {
   rules?: Record<string, RuleLevel> | undefined;
   categories?: Record<string, RuleLevel> | undefined;
   verbose?: boolean | undefined;
+  blocking?: FailOnLevel | undefined;
   failOn?: FailOnLevel | undefined;
+  scope?: ScanScope | undefined;
+  base?: string | undefined;
   diff?: boolean | string | undefined;
   baseline?: string | undefined;
   include?: string[] | undefined;
@@ -109,13 +114,19 @@ export interface DiagnoseResult {
   elapsedMilliseconds: number;
 }
 
-export type JsonReportMode = "full" | "diff" | "staged" | "changed-files";
+export type JsonReportMode = "full" | "diff" | "staged" | "changed-files" | "baseline";
 
 export interface DiffInfo {
   currentBranch: string;
   baseBranch: string;
+  baseRef?: string | undefined;
   changedFiles: string[];
   isCurrentChanges?: boolean | undefined;
+}
+
+export interface ChangedLineRanges {
+  file: string;
+  ranges: Array<readonly [number, number]>;
 }
 
 export interface JsonReportSummary {
@@ -134,6 +145,12 @@ export interface JsonReport {
   directory: string;
   mode?: JsonReportMode | undefined;
   diff?: DiffInfo | null | undefined;
+  baseline?: {
+    baseRef: string;
+    newCount: number;
+    fixedCount: number;
+    baseTotalCount: number;
+  } | undefined;
   project: ProjectInfo;
   projects?: Array<{
     directory: string;

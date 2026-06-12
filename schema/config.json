@@ -28,6 +28,25 @@
         "none"
       ]
     },
+    "blocking": {
+      "enum": [
+        "error",
+        "warning",
+        "none"
+      ]
+    },
+    "scope": {
+      "enum": [
+        "full",
+        "files",
+        "changed",
+        "lines"
+      ]
+    },
+    "base": {
+      "type": "string",
+      "minLength": 1
+    },
     "diff": {
       "oneOf": [
         {

@@ -31,9 +31,11 @@ if (!reportPath || !fs.existsSync(reportPath)) {
 const report = JSON.parse(fs.readFileSync(reportPath, "utf-8"));
 const summary = report.summary ?? {};
 const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics : [];
+const baseline = report.baseline && typeof report.baseline === "object" ? report.baseline : null;
 
 setOutput("score", summary.score ?? "");
 setOutput("total-issues", summary.totalDiagnosticCount ?? diagnostics.length);
+setOutput("fixed-issues", baseline?.fixedCount ?? 0);
 setOutput("error-count", summary.errorCount ?? 0);
 setOutput("warning-count", summary.warningCount ?? 0);
 setOutput("affected-files", summary.affectedFileCount ?? 0);
@@ -51,6 +53,13 @@ const lines = [
   `| ${tableText(status)} | ${summary.affectedFileCount ?? 0} / ${sourceFileCount} | ${summary.totalDiagnosticCount ?? diagnostics.length} | ${summary.errorCount ?? 0} | ${summary.warningCount ?? 0} |`,
   "",
 ];
+
+if (baseline) {
+  lines.push(
+    `Compared with ${inlineCode(baseline.baseRef ?? "base")}: ${inlineCode(baseline.newCount ?? diagnostics.length)} new, ${inlineCode(baseline.fixedCount ?? 0)} fixed, ${inlineCode(baseline.baseTotalCount ?? 0)} at base.`,
+    "",
+  );
+}
 
 if (diagnostics.length === 0) {
   lines.push("No Vue Doctor diagnostics found.");

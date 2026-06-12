@@ -36,7 +36,7 @@ interface InstallSelection {
 const PACKAGE_NAME = "@rekl0w/vue-doctor";
 const PACKAGE_SPEC = `${PACKAGE_NAME}@latest`;
 const SCRIPT_COMMAND = "vue-doctor";
-const HOOK_COMMAND = "npx vue-doctor --staged --fail-on warning";
+const HOOK_COMMAND = "npx vue-doctor --staged --blocking warning";
 const MARKER_START = "# vue-doctor start";
 const MARKER_END = "# vue-doctor end";
 
@@ -134,7 +134,9 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
+  statuses: write
 
 jobs:
   vue-doctor:
@@ -146,9 +148,12 @@ jobs:
       - uses: Rekl0w/vue-doctor@v${VERSION}
         with:
           directory: .
-          fail-on: warning
+          scope: changed
+          blocking: warning
           annotations: true
           comment: true
+          review-comments: true
+          commit-status: true
 `;
   fs.writeFileSync(workflowPath, content);
   return workflowPath;
@@ -229,9 +234,9 @@ const hookScript = (): string => `#!/bin/sh
 set -eu
 
 if command -v vue-doctor >/dev/null 2>&1; then
-  vue-doctor --staged --fail-on none
+  vue-doctor --staged --blocking none
 elif command -v npx >/dev/null 2>&1; then
-  npx vue-doctor --staged --fail-on none
+  npx vue-doctor --staged --blocking none
 fi
 `;
 

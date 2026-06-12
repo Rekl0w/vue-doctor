@@ -412,6 +412,7 @@ export const toJsonReportFromScans = (
   options: {
     mode?: JsonReportMode;
     diff?: DiffInfo | null;
+    baseline?: JsonReport["baseline"] | undefined;
     elapsedMilliseconds?: number;
   } = {},
 ): JsonReport => {
@@ -422,6 +423,7 @@ export const toJsonReportFromScans = (
       directory: path.resolve(directory),
       mode: options.mode,
       diff: options.diff,
+      baseline: options.baseline,
       projects: [
         {
           directory: path.resolve(scans[0]!.directory),
@@ -449,6 +451,7 @@ export const toJsonReportFromScans = (
     directory: path.resolve(directory),
     mode: options.mode,
     diff: options.diff,
+    baseline: options.baseline,
     project: aggregateProject,
     projects: scans.map((scan) => {
       const projectSummary = summarizeDiagnostics(scan.result.diagnostics);

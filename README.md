@@ -74,13 +74,16 @@ Options:
   --score                output only the numeric score
   --annotations          output GitHub Actions annotations
   --project <name>       workspace project(s) to scan
-  --diff [base]          scan changed files vs base branch
+  --scope <value>        scan/report scope: full, files, changed, or lines
+  --base <ref>           base git ref for files, changed, and lines scopes
+  --diff [base]          deprecated alias for --scope changed
   --changed-files-from <path> scan source files listed in a newline, NUL, or JSON file
   --staged               scan staged git files
   --full                 force a full scan
   --offline              accepted for React Doctor parity; scoring is local
   --experimental-parallel [workers] scan files in worker threads
-  --fail-on <level>      exit with error on diagnostics: error, warning, none (default: error)
+  --blocking <level>     severity that exits non-zero: error, warning, none
+  --fail-on <level>      deprecated alias for --blocking <level> (default: error)
   --preset <name>        rule preset: recommended, strict, design
   --baseline <path>      ignore diagnostics already present in a baseline file
   --update-baseline <path> write the current diagnostics to a baseline file
@@ -98,23 +101,27 @@ Examples:
 ```bash
 npx @rekl0w/vue-doctor@latest
 npx vue-doctor apps/web --verbose
-npx vue-doctor --diff main --fail-on warning
-npx vue-doctor --experimental-parallel 4 --fail-on none
+npx vue-doctor --scope changed --base main --blocking warning
+npx vue-doctor --scope lines --base main --blocking warning
+npx vue-doctor --experimental-parallel 4 --blocking none
 npx vue-doctor --staged
 npx vue-doctor --changed-files-from /tmp/changed-files.txt
 npx vue-doctor --project web,admin --json
 npx vue-doctor --json > vue-doctor-report.json
 npx vue-doctor --markdown > vue-doctor-report.md
 npx vue-doctor --sarif > vue-doctor.sarif
-npx vue-doctor --update-baseline vue-doctor-baseline.json --fail-on none
-npx vue-doctor --baseline vue-doctor-baseline.json --fail-on warning
-npx vue-doctor --copy-prompt --fail-on none
-npx vue-doctor --fail-on warning
+npx vue-doctor --update-baseline vue-doctor-baseline.json --blocking none
+npx vue-doctor --baseline vue-doctor-baseline.json --blocking warning
+npx vue-doctor rules list
+npx vue-doctor rules explain vue-doctor/no-v-html
+npx vue-doctor rules disable vue-doctor/require-img-alt
+npx vue-doctor --copy-prompt --blocking none
+npx vue-doctor --blocking warning
 ```
 
 When diagnostics are found in an interactive terminal, Vue Doctor can hand them to an agent through an arrow-key menu. It writes a full diagnostics directory, builds a focused repair prompt, and can launch Codex, Claude Code, or Cursor Agent when their CLIs are available. Non-interactive runs skip the prompt unless you pass `--copy-prompt`, `--print-prompt`, or `--handoff <mode>`.
 
-If you do not pass `--diff`, `--staged`, `--full`, `--include`, or `--changed-files-from`, interactive terminals can ask whether to scan changed files, staged files, or the full project with arrow-key navigation. In coding-agent environments, Vue Doctor shows the repo setup hint once per project when the package script/dependency is not installed yet.
+If you do not pass `--scope`, `--diff`, `--staged`, `--full`, `--include`, or `--changed-files-from`, interactive terminals can ask whether to scan changed files, staged files, or the full project with arrow-key navigation. In coding-agent environments, Vue Doctor shows the repo setup hint once per project when the package script/dependency is not installed yet.
 
 ## Configuration
 
@@ -124,8 +131,9 @@ Create `vue-doctor.config.json` in your repo:
 {
   "$schema": "https://raw.githubusercontent.com/Rekl0w/vue-doctor/main/schema/config.json",
   "preset": "recommended",
-  "failOn": "warning",
-  "diff": "main",
+  "blocking": "warning",
+  "scope": "changed",
+  "base": "main",
   "baseline": "vue-doctor-baseline.json",
   "maxComponentLines": 320,
   "maxProps": 12,
@@ -151,7 +159,7 @@ Create `vue-doctor.config.json` in your repo:
 }
 ```
 
-You can also place the same object under `vueDoctor` in `package.json`.
+You can also place the same object under `vueDoctor` in `package.json`. Legacy `failOn` and `diff` config fields are still accepted, but new projects should prefer `blocking`, `scope`, and `base`.
 
 ### Presets and Baselines
 
@@ -164,11 +172,40 @@ Use `preset` or `--preset` to tune the rule set:
 Use baselines when adopting Vue Doctor in an existing codebase:
 
 ```bash
-npx vue-doctor --update-baseline vue-doctor-baseline.json --fail-on none
-npx vue-doctor --baseline vue-doctor-baseline.json --fail-on warning
+npx vue-doctor --update-baseline vue-doctor-baseline.json --blocking none
+npx vue-doctor --baseline vue-doctor-baseline.json --blocking warning
 ```
 
 The baseline stores current diagnostics by file, rule, location, and message. Future scans with `--baseline` report only new or moved diagnostics.
+
+### Pull Request Scopes
+
+Use `--scope` with `--base` when you want CI to focus on reviewable changes:
+
+| Scope | Behavior |
+| --- | --- |
+| `changed` | Scan changed files, compare against the base ref, and report only introduced or moved diagnostics. JSON reports include `mode: "baseline"` and fixed/new/base counts. |
+| `lines` | Scan changed files, then keep only diagnostics whose primary location is on a changed hunk line. |
+| `files` | Report every diagnostic inside changed source files. |
+| `full` | Scan the full Vue project. |
+
+`--base` can be a branch, tag, commit SHA, or merge-base candidate. `VUE_DOCTOR_BASE_SHA` and `VUE_DOCTOR_BASE_REF` are also honored when a CI system provides the base ref through the environment.
+
+### Rule Management
+
+Manage project rules without hand-editing JSON:
+
+```bash
+npx vue-doctor rules list
+npx vue-doctor rules list --category Accessibility --configured
+npx vue-doctor rules explain require-img-alt
+npx vue-doctor rules set vue-doctor/no-v-html error
+npx vue-doctor rules enable require-button-name --severity warning
+npx vue-doctor rules disable no-outline-none
+npx vue-doctor rules category Design off
+```
+
+`rules set`, `rules enable`, `rules disable`, and `rules category` update the nearest Vue Doctor config file, or create `vue-doctor.config.json` at the project root when none exists.
 
 ### Inline Suppressions
 
@@ -200,7 +237,9 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
+  statuses: write
 
 jobs:
   vue-doctor:
@@ -209,14 +248,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: Rekl0w/vue-doctor@v0.4.0
+      - uses: Rekl0w/vue-doctor@v0.5.0
         id: vue-doctor
         with:
           directory: .
           preset: strict
-          fail-on: warning
+          scope: changed
+          blocking: warning
           annotations: true
           comment: true
+          review-comments: true
+          commit-status: true
           json: true
           report-path: vue-doctor-report.json
           sarif: true
@@ -231,26 +273,29 @@ jobs:
             ${{ steps.vue-doctor.outputs['sarif-report-path'] }}
 ```
 
-On pull requests, the action asks GitHub for the changed file list and passes it to `--changed-files-from`; if that API is unavailable it falls back to the configured `diff` or a full scan. With `comment: true`, it updates one sticky Vue Doctor comment using the built-in GitHub token. Set `non-blocking: true` when you want annotations and comments without failing the workflow.
+On pull requests, the action asks GitHub for the changed file list, fetches the base SHA, and defaults to `scope: changed`. That reports only diagnostics introduced by the PR while also counting diagnostics fixed compared with the base. Use `scope: lines` for changed-hunk-only review, `scope: files` for every issue in touched files, or `scope: full` for full-project gating. Non-PR events always scan the full project.
+
+With `comment: true`, the action updates one sticky Vue Doctor summary comment. With `review-comments: true`, it posts inline review comments only on commentable PR lines. With `commit-status: true`, it publishes a `Vue Doctor` commit status containing the score and issue counts. Set `non-blocking: true` when you want annotations, comments, and statuses without failing the workflow.
 
 The action exposes health and issue metrics as outputs:
 
 ```yaml
 ${{ steps.vue-doctor.outputs.score }}
 ${{ steps.vue-doctor.outputs.total-issues }}
+${{ steps.vue-doctor.outputs.fixed-issues }}
 ${{ steps.vue-doctor.outputs.error-count }}
 ${{ steps.vue-doctor.outputs.warning-count }}
 ${{ steps.vue-doctor.outputs.affected-files }}
 ```
 
-Inputs: `directory`, `verbose`, `project`, `diff`, `preset`, `baseline`, `update-baseline`, `github-token`, `fail-on`, `offline`, `experimental-parallel`, `annotations`, `comment`, `non-blocking`, `json`, `report-path`, `markdown`, `markdown-report-path`, `sarif`, `sarif-report-path`, `version`, and `node-version`.
+Inputs: `directory`, `verbose`, `project`, `scope`, `diff`, `preset`, `baseline`, `update-baseline`, `github-token`, `blocking`, `fail-on`, `offline`, `experimental-parallel`, `annotations`, `comment`, `review-comments`, `commit-status`, `non-blocking`, `json`, `report-path`, `markdown`, `markdown-report-path`, `sarif`, `sarif-report-path`, `version`, and `node-version`. Legacy `diff` and `fail-on` inputs still work for older workflows.
 
 Prefer not to use the action? The package works directly:
 
 ```yaml
-- run: npx @rekl0w/vue-doctor@latest --fail-on warning --annotations
-- run: npx @rekl0w/vue-doctor@latest --json --fail-on none > vue-doctor-report.json
-- run: npx @rekl0w/vue-doctor@latest --sarif --fail-on none > vue-doctor.sarif
+- run: npx @rekl0w/vue-doctor@latest --blocking warning --annotations
+- run: npx @rekl0w/vue-doctor@latest --json --blocking none > vue-doctor-report.json
+- run: npx @rekl0w/vue-doctor@latest --sarif --blocking none > vue-doctor.sarif
 ```
 
 ## Node API

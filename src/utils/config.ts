@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { CONFIG_FILENAMES, DEFAULT_FAIL_ON } from "../constants.js";
-import type { FailOnLevel, RuleLevel, VueDoctorConfig, VueDoctorPreset } from "../types.js";
+import { CONFIG_FILENAMES } from "../constants.js";
+import type { FailOnLevel, RuleLevel, ScanScope, VueDoctorConfig, VueDoctorPreset } from "../types.js";
 
 export interface LoadedConfig {
   config: VueDoctorConfig;
@@ -39,6 +39,11 @@ const asFailOn = (value: unknown): FailOnLevel | undefined => {
   return undefined;
 };
 
+const asScope = (value: unknown): ScanScope | undefined => {
+  if (value === "full" || value === "files" || value === "changed" || value === "lines") return value;
+  return undefined;
+};
+
 const asDiff = (value: unknown): boolean | string | undefined => {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -61,6 +66,8 @@ const asRuleLevelMap = (value: unknown): Record<string, RuleLevel> | undefined =
   for (const [rule, level] of Object.entries(value)) {
     if (level === "error" || level === "warning" || level === "off") {
       result[rule] = level;
+    } else if (level === "warn") {
+      result[rule] = "warning";
     }
   }
   return result;
@@ -82,7 +89,10 @@ const normalizeConfig = (raw: Record<string, unknown>): VueDoctorConfig => {
     rootDir: typeof raw.rootDir === "string" ? raw.rootDir : undefined,
     preset: asPreset(raw.preset),
     verbose: asBoolean(raw.verbose),
-    failOn: asFailOn(raw.failOn) ?? DEFAULT_FAIL_ON,
+    blocking: asFailOn(raw.blocking),
+    failOn: asFailOn(raw.failOn),
+    scope: asScope(raw.scope),
+    base: typeof raw.base === "string" && raw.base.trim().length > 0 ? raw.base.trim() : undefined,
     diff: asDiff(raw.diff),
     baseline: typeof raw.baseline === "string" ? raw.baseline : undefined,
     include: asStringArray(raw.include),

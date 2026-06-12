@@ -1,4 +1,4 @@
-export const VERSION = "0.4.2";
+export const VERSION = "0.5.0";
 
 export const PLUGIN_NAME = "vue-doctor";
 
