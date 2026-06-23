@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-06-23
 
 - Added Vue-specific performance checks for async computed getters, sync-flush watchers, and inline object/function component props in templates.
 - Added accessibility checks for unlabeled form controls and clickable non-interactive elements without keyboard support.

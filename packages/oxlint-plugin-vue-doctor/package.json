@@ -1,6 +1,6 @@
 {
   "name": "oxlint-plugin-vue-doctor",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Vue Doctor rules for oxlint.",
   "keywords": [
     "accessibility",
