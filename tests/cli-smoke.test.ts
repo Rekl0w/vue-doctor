@@ -80,6 +80,20 @@ const makeChangedGitProject = (): string => {
   return root;
 };
 
+const makeDeadCodeProject = (): string => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vue-doctor-dead-code-"));
+  tempRoots.push(root);
+  fs.writeFileSync(
+    path.join(root, "package.json"),
+    JSON.stringify({ dependencies: { vue: "^3.5.0", vite: "^7.0.0", "unused-runtime": "^1.0.0" } }),
+  );
+  fs.writeFileSync(path.join(root, "index.html"), "<script type=\"module\" src=\"/src/main.js\"></script>\n");
+  fs.mkdirSync(path.join(root, "src"), { recursive: true });
+  fs.writeFileSync(path.join(root, "src", "main.js"), "console.log('ok')\n");
+  fs.writeFileSync(path.join(root, "src", "dead.js"), "export const dead = true\n");
+  return root;
+};
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -122,6 +136,42 @@ describe("CLI smoke", () => {
     };
 
     expect(json.summary.totalDiagnosticCount).toBe(1);
+  });
+
+  it("can hide warnings from CLI reports", () => {
+    const root = makeProject();
+
+    const json = JSON.parse(runCli([root, "--json", "--no-warnings"])) as {
+      summary: { totalDiagnosticCount: number; score: number };
+    };
+
+    expect(json.summary.totalDiagnosticCount).toBe(0);
+    expect(json.summary.score).toBe(100);
+  });
+
+  it("can disable dead-code analysis from the CLI", () => {
+    const root = makeDeadCodeProject();
+
+    const withDeadCode = JSON.parse(runCli([root, "--json", "--blocking", "none"])) as {
+      diagnostics: Array<{ rule: string }>;
+    };
+    const withoutDeadCode = JSON.parse(runCli([root, "--json", "--blocking", "none", "--no-dead-code"])) as {
+      diagnostics: Array<{ rule: string }>;
+    };
+
+    expect(withDeadCode.diagnostics.map((diagnostic) => diagnostic.rule)).toContain("no-unused-file");
+    expect(withoutDeadCode.diagnostics.map((diagnostic) => diagnostic.rule)).not.toContain("no-unused-file");
+    expect(withoutDeadCode.diagnostics.map((diagnostic) => diagnostic.rule)).not.toContain("no-unused-dependency");
+  });
+
+  it("accepts the supply-chain CLI toggle", () => {
+    const root = makeProject();
+
+    const json = JSON.parse(runCli([root, "--json", "--blocking", "none", "--no-supply-chain"])) as {
+      diagnostics: Array<{ rule: string }>;
+    };
+
+    expect(json.diagnostics.map((diagnostic) => diagnostic.rule)).not.toContain("low-supply-chain-score");
   });
 
   it("loads TypeScript config files", () => {
@@ -209,7 +259,7 @@ describe("CLI smoke", () => {
     fs.writeFileSync(path.join(root, "src", "Clean.vue"), "<template><p>ok</p></template>\n");
 
     const json = JSON.parse(
-      runCli([root, "--json", "--fail-on", "none", "--experimental-parallel", "2"]),
+      runCli([root, "--json", "--fail-on", "none", "--experimental-parallel", "2", "--no-dead-code"]),
     ) as {
       diagnostics: Array<{ rule: string }>;
       summary: { totalDiagnosticCount: number };

@@ -22,5 +22,7 @@ export type {
   ScoreResult,
   Severity,
   VueDoctorConfig,
+  VueDoctorDeadCodeConfig,
   VueDoctorPreset,
+  VueDoctorSupplyChainConfig,
 } from "./types.js";

@@ -49,6 +49,8 @@ import { filterDiagnosticsByBaseline, readBaselineKeys, writeBaseline } from "./
 
 interface CliFlags {
   verbose?: boolean;
+  warnings?: boolean;
+  deadCode?: boolean;
   json?: boolean;
   markdown?: boolean;
   sarif?: boolean;
@@ -60,6 +62,7 @@ interface CliFlags {
   full?: boolean;
   staged?: boolean;
   offline?: boolean;
+  supplyChain?: boolean;
   scope?: string;
   base?: string;
   diff?: boolean | string;
@@ -164,8 +167,19 @@ const printOpeningSequence = async (
 ): Promise<void> => {
   if (!enabled) return;
   const relativeRoot = path.relative(process.cwd(), rootDirectory) || ".";
-  await printTypeLine(`I'll inspect your Vue files in ${relativeRoot}.`, true);
-  await printTypeLine(`Checking templates, scripts, styles, and ${projectCount === 1 ? "one project" : `${projectCount} projects`}.`, true);
+  const face = [
+    "  +-----+",
+    "  | o o |  Vue Doctor",
+    "  |  v  |  templates, scripts, styles, package health",
+    "  +-----+",
+  ];
+  for (const line of face) {
+    console.log(pc.green(line));
+    await sleep(24);
+  }
+  console.log("");
+  await printTypeLine(`Inspecting ${relativeRoot}.`, true);
+  await printTypeLine(`Scanning ${projectCount === 1 ? "one project" : `${projectCount} projects`} with Vue performance, security, accessibility, and package checks.`, true);
   await sleep(120);
   console.log("");
 };
@@ -201,6 +215,19 @@ const resolvePreset = (value: string | undefined): VueDoctorPreset | undefined =
   if (value === undefined) return undefined;
   if (VALID_PRESETS.has(value as VueDoctorPreset)) return value as VueDoctorPreset;
   throw new Error(`Preset "${value}" is not supported. Use recommended, strict, or design.`);
+};
+
+const buildConfigOverride = (
+  preset: VueDoctorPreset | undefined,
+  flags: CliFlags,
+): VueDoctorConfig | undefined => {
+  const config: VueDoctorConfig = {};
+  if (preset) config.preset = preset;
+  if (flags.warnings !== undefined) config.warnings = flags.warnings;
+  if (flags.deadCode !== undefined) config.deadCode = flags.deadCode;
+  if (flags.supplyChain !== undefined) config.supplyChain = { enabled: flags.supplyChain };
+  if (flags.offline) config.supplyChain = { ...config.supplyChain, enabled: false };
+  return Object.keys(config).length > 0 ? config : undefined;
 };
 
 interface RulesFlags {
@@ -1103,7 +1130,7 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
   const rootDirectory = loaded.rootDirectory;
   const failOn = resolveBlocking(flags, loaded.config);
   const preset = resolvePreset(flags.preset ?? loaded.config.preset);
-  const configOverride: VueDoctorConfig | undefined = preset ? { preset } : undefined;
+  const configOverride = buildConfigOverride(preset, flags);
   const baselinePath = resolveOptionalPath(rootDirectory, flags.baseline ?? loaded.config.baseline);
   const updateBaselinePath = resolveOptionalPath(rootDirectory, flags.updateBaseline);
   const explainValue = flags.explain ?? flags.why;
@@ -1142,7 +1169,7 @@ const runInspect = async (directory: string, flags: CliFlags): Promise<void> => 
   }
 
   if (flags.offline && !quiet) {
-    console.log(pc.dim("Offline mode enabled. Vue Doctor already scores locally, so no network call is made."));
+    console.log(pc.dim("Offline mode enabled. Socket.dev supply-chain scoring is skipped."));
     console.log("");
   }
 
@@ -1367,6 +1394,10 @@ export const runCli = async (argv = process.argv): Promise<void> => {
     .argument("[directory]", "project directory to scan", ".")
     .version(VERSION, "-v, --version")
     .option("--verbose", "show every diagnostic", false)
+    .option("--warnings", "show warning-severity diagnostics")
+    .option("--no-warnings", "hide warning-severity diagnostics")
+    .option("--dead-code", "enable import graph and dead-code analysis")
+    .option("--no-dead-code", "skip import graph and dead-code analysis")
     .option("--json", "output a single structured JSON report", false)
     .option("--markdown", "output a Markdown report", false)
     .option("--sarif", "output a SARIF 2.1.0 report", false)
@@ -1382,7 +1413,9 @@ export const runCli = async (argv = process.argv): Promise<void> => {
     .option("--diff [base]", "deprecated alias for --scope changed; pass false to disable")
     .option("--changed-files-from <path>", "scan source files listed in a newline, NUL, or JSON file")
     .option("--staged", "scan staged git files", false)
-    .option("--offline", "accepted for React Doctor parity; Vue Doctor always scores locally", false)
+    .option("--offline", "skip network-backed checks such as Socket.dev supply-chain scoring", false)
+    .option("--supply-chain", "enable Socket.dev supply-chain dependency scoring")
+    .option("--no-supply-chain", "skip Socket.dev supply-chain dependency scoring")
     .option("--experimental-parallel [workers]", "scan files in worker threads; defaults to 4 workers")
     .option("--blocking <level>", "severity that exits non-zero: error, warning, none")
     .option("--fail-on <level>", "deprecated alias for --blocking <level>")

@@ -8,6 +8,21 @@ export type VueDoctorPreset = "recommended" | "strict" | "design";
 
 export type ScanScope = "full" | "files" | "changed" | "lines";
 
+export interface VueDoctorDeadCodeConfig {
+  enabled?: boolean | undefined;
+  timeoutMs?: number | undefined;
+}
+
+export interface VueDoctorSupplyChainConfig {
+  enabled?: boolean | undefined;
+  minScore?: number | undefined;
+  severity?: Severity | undefined;
+  includeDevDependencies?: boolean | undefined;
+  cache?: boolean | undefined;
+  timeoutMs?: number | undefined;
+  totalTimeoutMs?: number | undefined;
+}
+
 export type DiagnosticCategory =
   | "Security"
   | "Correctness"
@@ -59,6 +74,9 @@ export interface VueDoctorConfig {
   rules?: Record<string, RuleLevel> | undefined;
   categories?: Record<string, RuleLevel> | undefined;
   verbose?: boolean | undefined;
+  warnings?: boolean | undefined;
+  deadCode?: boolean | VueDoctorDeadCodeConfig | undefined;
+  supplyChain?: VueDoctorSupplyChainConfig | undefined;
   blocking?: FailOnLevel | undefined;
   failOn?: FailOnLevel | undefined;
   scope?: ScanScope | undefined;
@@ -100,6 +118,8 @@ export interface ScoreResult {
 export interface DiagnoseOptions {
   lint?: boolean | undefined;
   verbose?: boolean | undefined;
+  warnings?: boolean | undefined;
+  deadCode?: boolean | undefined;
   includePaths?: string[] | undefined;
   config?: VueDoctorConfig | null | undefined;
   configPath?: string | undefined;

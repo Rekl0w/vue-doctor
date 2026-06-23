@@ -21,6 +21,63 @@
     "verbose": {
       "type": "boolean"
     },
+    "warnings": {
+      "type": "boolean"
+    },
+    "deadCode": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    },
+    "supplyChain": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minScore": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "severity": {
+          "enum": [
+            "error",
+            "warning"
+          ]
+        },
+        "includeDevDependencies": {
+          "type": "boolean"
+        },
+        "cache": {
+          "type": "boolean"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "totalTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
     "failOn": {
       "enum": [
         "error",

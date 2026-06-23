@@ -34,6 +34,14 @@ npm install -D @rekl0w/vue-doctor
 npx vue-doctor
 ```
 
+Script-level rules are also available as an oxlint plugin package:
+
+```bash
+npm install -D oxlint-plugin-vue-doctor
+```
+
+The oxlint plugin covers JavaScript and TypeScript rules that oxlint can run directly, such as `no-eval`, `no-public-env-secret`, `no-hardcoded-secret`, `no-async-computed`, `no-sync-watch-flush`, `no-full-lodash-import`, and `no-moment`. Keep using the main CLI for Vue template, style, dead-code, package-health, and supply-chain checks.
+
 The CLI prints a score:
 
 - 75 to 100: Great
@@ -48,16 +56,18 @@ Vue Doctor ships with focused rules that catch problems Vue teams repeatedly rev
 
 | Category | Rules |
 | --- | --- |
-| Security | `no-v-html`, `no-target-blank-without-rel`, `no-eval`, `no-hardcoded-secret`, `no-public-runtime-secret` |
+| Security | `no-v-html`, `no-target-blank-without-rel`, `no-eval`, `no-hardcoded-secret`, `no-public-runtime-secret`, `no-public-env-secret`, `no-risky-postinstall`, `low-supply-chain-score` |
 | Correctness | `vue-project-not-found`, `require-v-for-key`, `no-index-key`, `no-v-if-with-v-for`, `no-template-side-effects`, `no-mutating-props`, `no-vue2-deprecated-api`, `no-ssr-browser-global`, `no-hydration-unstable-template` |
-| Performance | `no-expensive-template-expression`, `no-deep-watch`, `watch-requires-cleanup`, `no-transition-all`, `no-permanent-will-change` |
-| Accessibility | `require-img-alt`, `require-button-name`, `no-autofocus`, `no-disabled-zoom` |
+| Performance | `no-expensive-template-expression`, `no-deep-watch`, `watch-requires-cleanup`, `no-async-computed`, `no-sync-watch-flush`, `no-inline-template-object`, `no-inline-template-function`, `no-transition-all`, `no-permanent-will-change` |
+| Accessibility | `require-img-alt`, `require-button-name`, `require-form-control-label`, `no-click-without-keyboard`, `no-autofocus`, `no-disabled-zoom` |
 | Architecture | `no-large-component`, `no-too-many-props` |
-| Maintainability | `prefer-scoped-style` |
+| Maintainability | `prefer-scoped-style`, `no-mixed-lockfiles`, `package-manager-lockfile-mismatch`, `no-unused-file`, `no-unused-export`, `no-unused-dependency`, `no-circular-import` |
 | Bundle Size | `no-full-lodash-import`, `no-moment`, `prefer-dynamic-import` |
 | Design | `no-outline-none`, `no-tiny-text`, `no-wide-letter-spacing`, `no-z-index-9999`, `no-pure-black-background`, `no-gradient-text` |
 
 The scanner respects `.gitignore`, `.eslintignore`, `.prettierignore`, `.vue-doctorignore`, and `vue-doctor.config.json` ignores.
+Full-project scans also inspect package metadata for package-manager lockfile drift, risky install lifecycle scripts, and direct dependency supply-chain risk through Socket.dev's free PURL endpoint. Supply-chain scoring is fail-open: network failures, timeouts, and unscored packages do not fail the scan.
+By default, full-project scans also build a local Vue/Vite/Nuxt-aware import graph to find unreachable source files, unused named exports, circular import chains, and runtime dependencies that are not imported by scanned source or config files. This pass understands relative imports, common `@/*` path aliases, dynamic `import()`, `require()`, and `import.meta.glob()` route/view patterns. It is skipped automatically for changed-file, staged, include-only, and baseline comparison scans because reachability is a whole-project property.
 
 ## CLI
 
@@ -73,6 +83,12 @@ Options:
   --json-compact         with --json, emit compact JSON
   --score                output only the numeric score
   --annotations          output GitHub Actions annotations
+  --warnings             show warning-severity diagnostics
+  --no-warnings          hide warning-severity diagnostics
+  --dead-code            enable import graph and dead-code analysis
+  --no-dead-code         skip import graph and dead-code analysis
+  --supply-chain         enable Socket.dev supply-chain dependency scoring
+  --no-supply-chain      skip Socket.dev supply-chain dependency scoring
   --project <name>       workspace project(s) to scan
   --scope <value>        scan/report scope: full, files, changed, or lines
   --base <ref>           base git ref for files, changed, and lines scopes
@@ -80,7 +96,7 @@ Options:
   --changed-files-from <path> scan source files listed in a newline, NUL, or JSON file
   --staged               scan staged git files
   --full                 force a full scan
-  --offline              accepted for React Doctor parity; scoring is local
+  --offline              skip network-backed checks such as Socket.dev supply-chain scoring
   --experimental-parallel [workers] scan files in worker threads
   --blocking <level>     severity that exits non-zero: error, warning, none
   --fail-on <level>      deprecated alias for --blocking <level> (default: error)
@@ -103,6 +119,10 @@ npx @rekl0w/vue-doctor@latest
 npx vue-doctor apps/web --verbose
 npx vue-doctor --scope changed --base main --blocking warning
 npx vue-doctor --scope lines --base main --blocking warning
+npx vue-doctor --no-warnings --blocking none
+npx vue-doctor --no-dead-code --blocking none
+npx vue-doctor --no-supply-chain --blocking none
+npx vue-doctor --offline --blocking none
 npx vue-doctor --experimental-parallel 4 --blocking none
 npx vue-doctor --staged
 npx vue-doctor --changed-files-from /tmp/changed-files.txt
@@ -133,6 +153,18 @@ Create `vue-doctor.config.json` in your repo:
 {
   "$schema": "https://raw.githubusercontent.com/Rekl0w/vue-doctor/main/schema/config.json",
   "preset": "recommended",
+  "warnings": true,
+  "deadCode": {
+    "enabled": true,
+    "timeoutMs": 120000
+  },
+  "supplyChain": {
+    "enabled": true,
+    "minScore": 50,
+    "severity": "error",
+    "includeDevDependencies": true,
+    "cache": true
+  },
   "blocking": "warning",
   "scope": "changed",
   "base": "main",
@@ -162,6 +194,8 @@ Create `vue-doctor.config.json` in your repo:
 ```
 
 You can also place the same object under `vueDoctor` in `package.json`. Legacy `failOn` and `diff` config fields are still accepted, but new projects should prefer `blocking`, `scope`, and `base`.
+
+`deadCode` can be either a boolean or an object with `enabled` and `timeoutMs`. `supplyChain` runs only for full-project scans, caches Socket.dev responses outside the repo, and can be disabled with config, `--no-supply-chain`, or `--offline`.
 
 Typed configs are supported too:
 

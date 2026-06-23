@@ -28,6 +28,9 @@
   },
   "type": "module",
   "sideEffects": false,
+  "workspaces": [
+    "packages/*"
+  ],
   "bin": {
     "vue-doctor": "bin/vue-doctor.js"
   },
@@ -56,10 +59,12 @@
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build": "npm run build:core && npm run build:plugin",
+    "build:core": "tsup",
+    "build:plugin": "npm run build --workspace oxlint-plugin-vue-doctor",
     "dev": "tsup --watch",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace oxlint-plugin-vue-doctor",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
@@ -78,11 +83,13 @@
     "ignore": "^7.0.0",
     "jiti": "^2.7.0",
     "minimatch": "^10.0.0",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "semver": "^7.8.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.0.0",
+    "@types/semver": "^7.7.1",
     "@vitest/coverage-v8": "^4.1.8",
     "eslint": "^10.4.1",
     "tsup": "^8.5.0",

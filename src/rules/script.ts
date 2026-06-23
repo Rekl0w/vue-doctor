@@ -28,6 +28,7 @@ const HEAVY_STATIC_IMPORTS = new Set([
 ]);
 const SSR_FRAMEWORKS = new Set(["nuxt", "vitepress", "vuepress"]);
 const BROWSER_GLOBALS = new Set(["window", "document", "localStorage", "sessionStorage", "navigator"]);
+const PUBLIC_ENV_PREFIXES = ["VITE_", "VUE_APP_", "NUXT_PUBLIC_", "PUBLIC_"];
 
 const reportAtIndex = (
   context: ScanContext,
@@ -144,6 +145,25 @@ const getCalleeName = (node: unknown): string | null => {
     return getName(node.property);
   }
   return null;
+};
+
+const getMemberChain = (node: unknown): string[] => {
+  if (!isNode(node)) return [];
+  if (node.type === "Identifier") return [getName(node) ?? ""].filter(Boolean);
+  if (node.type === "ThisExpression") return ["this"];
+  if (node.type === "MetaProperty") {
+    const meta = getName(node.meta);
+    const property = getName(node.property);
+    return [meta, property].filter((part): part is string => Boolean(part));
+  }
+  if (node.type === "CallExpression" || node.type === "OptionalCallExpression") {
+    const calleeName = getCalleeName(node.callee);
+    return calleeName ? [`${calleeName}()`] : [];
+  }
+  if (node.type === "MemberExpression" || node.type === "OptionalMemberExpression") {
+    return [...getMemberChain(node.object), getName(node.property) ?? ""].filter(Boolean);
+  }
+  return [];
 };
 
 const getObjectName = (node: unknown): string | null => {
@@ -364,6 +384,87 @@ const reportWatcherCleanup = (
   });
 };
 
+const reportSyncWatchFlush = (
+  context: ScanContext,
+  source: string,
+  lineOffset: number,
+  node: AnyNode,
+): void => {
+  const calleeName = getCalleeName(node.callee);
+  if (calleeName !== "watch" && calleeName !== "watchEffect" && calleeName !== "watchPostEffect") return;
+
+  const syncFlush = getCallArguments(node)
+    .filter((argument) => argument.type === "ObjectExpression")
+    .map((argument) => findObjectProperty(argument, "flush"))
+    .find((property) => property && getStringValue(property.value) === "sync");
+
+  if (!syncFlush) return;
+  reportAtNode(context, source, lineOffset, syncFlush, {
+    rule: "no-sync-watch-flush",
+    severity: "warning",
+    category: "Performance",
+    message: "Watcher uses flush: 'sync', so it runs inside Vue's synchronous update path.",
+    help: "Prefer the default async flush or flush: 'post' unless this watcher is tiny and documented.",
+  });
+};
+
+const reportAsyncComputed = (
+  context: ScanContext,
+  source: string,
+  lineOffset: number,
+  node: AnyNode,
+): void => {
+  if (getCalleeName(node.callee) !== "computed") return;
+  const [getterOrOptions] = getCallArguments(node);
+  if (!getterOrOptions) return;
+
+  const getterIsAsync =
+    (["ArrowFunctionExpression", "FunctionExpression"].includes(getterOrOptions.type ?? "") &&
+      getterOrOptions.async === true) ||
+    (getterOrOptions.type === "ObjectExpression" &&
+      Boolean(findObjectProperty(getterOrOptions, "get")?.async));
+
+  if (!getterIsAsync) return;
+  reportAtNode(context, source, lineOffset, node, {
+    rule: "no-async-computed",
+    severity: "error",
+    category: "Correctness",
+    message: "computed() getter is async, so Vue cannot cache a stable synchronous value.",
+    help: "Use a ref plus watch/watchEffect for async work, then expose a synchronous computed projection.",
+  });
+};
+
+const looksLikePublicEnvName = (name: string): boolean =>
+  PUBLIC_ENV_PREFIXES.some((prefix) => name.startsWith(prefix));
+
+const stripPublicEnvPrefix = (name: string): string =>
+  name.slice(PUBLIC_ENV_PREFIXES.find((prefix) => name.startsWith(prefix))?.length ?? 0);
+
+const reportPublicEnvSecret = (
+  context: ScanContext,
+  source: string,
+  lineOffset: number,
+  node: AnyNode,
+): void => {
+  const chain = getMemberChain(node);
+  const envName = chain.at(-1);
+  if (!envName || !looksLikePublicEnvName(envName) || !isSecretishName(stripPublicEnvPrefix(envName))) return;
+
+  const isKnownPublicEnvAccess =
+    chain.join(".").startsWith("import.meta.env.") ||
+    chain.join(".").startsWith("process.env.") ||
+    chain.includes("public");
+  if (!isKnownPublicEnvAccess) return;
+
+  reportAtNode(context, source, lineOffset, node, {
+    rule: "no-public-env-secret",
+    severity: "error",
+    category: "Security",
+    message: `Public client env variable "${envName}" looks secret-like.`,
+    help: "Values with public env prefixes are bundled for the browser; keep tokens and secrets server-side.",
+  });
+};
+
 const packageMatches = (source: string, packageName: string): boolean =>
   source === packageName || source.startsWith(`${packageName}/`);
 
@@ -557,6 +658,8 @@ const scanAst = (
       }
 
       reportWatcherCleanup(context, source, lineOffset, node);
+      reportSyncWatchFlush(context, source, lineOffset, node);
+      reportAsyncComputed(context, source, lineOffset, node);
     }
 
     if (node.type === "NewExpression" && getCalleeName(node.callee) === "Function") {
@@ -613,6 +716,9 @@ const scanAst = (
 
     reportVue2DeprecatedApi(context, source, lineOffset, node);
     reportPublicRuntimeConfigSecrets(context, source, lineOffset, node);
+    if (node.type === "MemberExpression" || node.type === "OptionalMemberExpression") {
+      reportPublicEnvSecret(context, source, lineOffset, node);
+    }
   });
 };
 

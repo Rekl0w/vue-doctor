@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Added Vue-specific performance checks for async computed getters, sync-flush watchers, and inline object/function component props in templates.
+- Added accessibility checks for unlabeled form controls and clickable non-interactive elements without keyboard support.
+- Added public client env secret detection plus full-project package health diagnostics for mixed lockfiles, package-manager mismatches, and risky install lifecycle scripts.
+- Added Socket.dev supply-chain scoring for direct dependencies with `low-supply-chain-score`, `--supply-chain` / `--no-supply-chain`, `--offline`, cache, timeout, severity, and devDependency config support.
+- Added Vue/Vite/Nuxt-aware import graph dead-code analysis for unreachable source files, unused named exports, unused runtime dependencies, and circular imports, with `--dead-code` / `--no-dead-code` and boolean/object `deadCode` config support.
+- Moved dead-code analysis behind a timeout-bounded worker in packaged CLI runs so stalled analysis fails open instead of blocking the scan.
+- Added the publishable `oxlint-plugin-vue-doctor` workspace package for script-level Vue Doctor rules that oxlint can run directly.
+- Added `warnings` config support and `--warnings` / `--no-warnings` CLI flags to hide advisory diagnostics when users want error-only reports.
+- Refined the interactive CLI opening sequence to show a richer Vue Doctor scan intro before analysis begins.
+
 ## 0.5.1
 
 - Added an interactive post-scan setup prompt so first-run users can add the project script, dependency, GitHub Actions workflow, hooks, and agent skill from the same CLI flow.

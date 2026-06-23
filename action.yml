@@ -75,7 +75,7 @@ inputs:
     description: "Severity that fails pull request workflows: none, warning, or error. Overrides fail-on when set."
     required: false
   offline:
-    description: "Accepted for React Doctor parity. Vue Doctor always scores locally."
+    description: "Skip network-backed checks such as Socket.dev supply-chain scoring."
     default: "false"
   node-version:
     description: "Node.js version to use"

